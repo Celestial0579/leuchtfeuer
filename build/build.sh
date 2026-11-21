@@ -36,6 +36,10 @@ die() { printf '\033[1;31mFEHLER:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "build.sh muss als root laufen."
 
+# pam_pruefen vor dem squashfs (GHSA-j332-2v26-m4qm)
+# shellcheck source=rescue/lib/pam.sh
+. "$SRC/rescue/lib/pam.sh"
+
 # ---------------------------------------------------------------------------
 # Mounts im chroot, beim Beenden immer aufräumen
 # ---------------------------------------------------------------------------
@@ -283,6 +287,13 @@ squash() {
 	# Keine SSH-Hostschlüssel im Image (GHSA-72hw-w482-prv6), siehe chroot-setup.sh.
 	if compgen -G "$CHROOT/etc/ssh/ssh_host_*" >/dev/null; then
 		echo "FEHLER: SSH-Hostschlüssel im chroot: $(cd "$CHROOT/etc/ssh" && echo ssh_host_*)" >&2
+		exit 1
+	fi
+	# Kein leeres Passwort, kein nullok, su nur für root und die Gruppe sudo (GHSA-j332-2v26-m4qm),
+	# siehe rescue/lib/pam.sh und chroot-setup.sh.
+	local pam
+	if ! pam=$(pam_pruefen "$CHROOT"); then
+		echo "FEHLER: Anmeldung im chroot: ${pam//$'\n'/; }" >&2
 		exit 1
 	fi
 	mksquashfs "$CHROOT" "$ISO/casper/filesystem.squashfs" \

@@ -98,6 +98,14 @@ export BUILD_SYSTEM="Ubuntu"
 export FLAVOUR="Ubuntu"
 export LIVEMEDIA_TIMEOUT=3600
 EOF
+# Ein leeres Passwort gilt nie, und su wechselt für lf-claude zu keinem anderen Benutzer
+# (GHSA-j332-2v26-m4qm, siehe rescue/lib/pam.sh). Erst nach der letzten Paketinstallation, denn
+# pam-auth-update schreibt common-auth dabei neu. Das Passwort selbst sperrt
+# lf-passwort-sperre.service bei jedem Start, die Konsolen melden den Live-Benutzer ohne Passwort
+# an (getty@.service.d/autologin.conf).
+# shellcheck source=rescue/lib/pam.sh
+. /usr/local/lib/lf/pam.sh
+pam_haerten / || { echo "FEHLER: PAM ließ sich nicht wie erwartet einrichten" >&2; exit 1; }
 
 log "Locale und Tastatur (Deutsch)"
 sed -i 's/^# *\(de_DE.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen
@@ -126,7 +134,7 @@ fi
 systemctl mask swap.target >/dev/null 2>&1 || true
 
 log "Dienste"
-systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service NetworkManager.service
+systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service lf-passwort-sperre.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # Keine Wartezeit auf Netzwerk beim Booten

@@ -1,0 +1,21 @@
+[Unit]
+# casper legt den Live-Benutzer beim Boot ohne Passwort an. Ein leeres Passwort gilt nie
+# (GHSA-j332-2v26-m4qm, siehe rescue/lib/pam.sh): Er hat sudo ohne Passwort. Gesperrt geht nur
+# die Anmeldung mit Passwort nicht: Die Konsolen melden ihn ohne Passwort an
+# (getty@.service.d/autologin.conf), sudo fragt ihn nicht danach, und SSH setzt beim Einschalten
+# ein Einmal-Passwort (Werkzeuge > SSH).
+Description=Leuchtfeuer: Passwort des Live-Benutzers sperren
+# Ohne die Standard-Abhängigkeiten (After=basic.target), damit er vor jeder Anmeldung läuft, auch
+# vor ssh.socket: sockets.target liegt vor basic.target.
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-user-sessions.service ssh.service ssh.socket lf-selftest.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/usermod --password '!' rescue
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,7 @@ set -u
 
 LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
 [[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools; do
+for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools pam; do
 	# shellcheck disable=SC1090
 	. "$LF_LIB/$f.sh"
 done
@@ -1058,6 +1058,29 @@ selftest_claude_user() {
 	selftest_claude_freigabe || good=0
 	selftest_claude_wayland "$dir" || good=0
 	selftest_claude_skills || good=0
+	selftest_kein_su || good=0
+	((good))
+}
+
+# selftest_kein_su [WURZEL]   lf-claude wechselt mit su zu keinem anderen Benutzer
+#   (GHSA-j332-2v26-m4qm): Die Anmeldung ist so, wie pam_pruefen es verlangt (kein leeres
+#   Passwort, kein nullok, su nur für root und die Gruppe sudo), und su zum Live-Benutzer
+#   scheitert als lf-claude. Mit beiden su: dem von util-linux und dem von sudo-rs. Das liegt nicht
+#   im PATH, ist aber setuid root und nutzt dieselben PAM-Dienste (su, su-l).
+selftest_kein_su() {
+	local root=${1:-/} good=1 out s
+	if ! out=$(pam_pruefen "$root"); then
+		sed 's/^/LF-SELFTEST: Anmeldung: /' <<<"$out"
+		good=0
+	fi
+	for s in su "${root%/}/usr/lib/cargo/bin/su"; do
+		[[ $s == su || -x $s ]] || continue
+		if selftest_as timeout 10 "$s" rescue -c true >/dev/null 2>&1; then
+			echo "LF-SELFTEST: lf-claude: $s zum Live-Benutzer gelang"
+			good=0
+		fi
+	done
+	((good)) && echo "LF-SELFTEST: lf-claude: kein su zum Live-Benutzer, kein leeres Passwort, kein nullok"
 	((good))
 }
 

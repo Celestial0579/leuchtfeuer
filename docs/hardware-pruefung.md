@@ -34,6 +34,7 @@ Notiere zu jedem Punkt die Version (`lf --version`), das Rechnermodell und das E
 | BIOS oder CSM | wie oben |
 | Eintrag „in den RAM laden“, Stick danach abziehen | Der Assistent und die Werkzeuge laufen weiter |
 | Sicherer Grafikmodus | Bild ohne Grafiktreiber |
+| Alt+F2 … F6 | Eine Shell als `rescue`, ohne Anmeldung. Mit Strg+D kommt sie neu, wieder ohne Anmeldung |
 
 Nach jedem Start in der Shell (Werkzeuge > Shell):
 
@@ -132,7 +133,7 @@ Nur mit Internet und eigenem Konto.
 4. **Neue Version der CLI:** Mit persistentem Speicher startet beim nächsten Start eine Aktualisierung.
    Erwartet: Vor dem ersten Start der neuen Version steht „Neue Version von Claude Code … wird geprüft“, danach „Bestanden.“. Das Ergebnis steht in `/var/lib/lf-claude/.local/state/lf/claude-check/`.
 5. **Rechte von Claude:** Claude fragen, als wer es läuft und was `sudo -l` zeigt.
-   Erwartet: Benutzer `lf-claude`, sudo nur für `lf-lesen` und `lf-aufgabe`. `sudo dd`, `sudo mkfs` und `sudo -i` lehnt sudo ab. Die Statuszeile von Claude Code zeigt „Claude arbeitet mit lf-lesen und lf-aufgabe“.
+   Erwartet: Benutzer `lf-claude`, sudo nur für `lf-lesen` und `lf-aufgabe`. `sudo dd`, `sudo mkfs` und `sudo -i` lehnt sudo ab. `su rescue -c id` und `su - rescue` lehnt su ab, ohne nach einem Passwort zu fragen. Die Statuszeile von Claude Code zeigt „Claude arbeitet mit lf-lesen und lf-aufgabe“.
 6. **Aufgaben selbständig:** Im Assistenten ein Ziel wählen und bestätigen, dann Claude bitten, eine kleine Testdisk zu retten und ein paar Dateien daraus aufs Ziel zu kopieren.
    Erwartet: Claude benutzt `sudo lf-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `LF/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
 7. **Claude-Freigabe:** Werkzeuge > Claude-Freigabe, 1 Minute.
