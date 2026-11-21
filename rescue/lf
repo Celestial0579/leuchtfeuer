@@ -76,6 +76,7 @@ selftest() {
 	selftest_claude_user "$dir" || ok=0
 	selftest_p2v "$dir" || ok=0
 	selftest_owner || ok=0
+	selftest_netz || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -460,7 +461,8 @@ selftest_owner() {
 	local bad
 	bad=$(find /usr/local/lib/lf /usr/local/share/lf /usr/local/bin /etc/claude-code /etc/sudoers.d \
 		/etc/systemd/system /etc/systemd/journald.conf.d /etc/udev/rules.d /etc/initramfs-tools \
-		/etc/ssh/sshd_config.d /etc/skel \
+		/etc/ssh/sshd_config.d /etc/skel /etc/NetworkManager/conf.d \
+		/usr/lib/systemd/system /usr/lib/systemd/system.conf.d \
 		\( ! -user root -o -perm /022 \) ! -type l -print 2>/dev/null | head -n 5)
 	if [[ -n $bad ]]; then
 		echo "LF-SELFTEST: Eigentümer: nicht root oder für andere beschreibbar:"
@@ -468,6 +470,44 @@ selftest_owner() {
 		return 1
 	fi
 	echo "LF-SELFTEST: Eigentümer: Werkzeuge, Bibliotheken und Einstellungen gehören root"
+}
+
+# selftest_netz   LAN geht ohne Zutun (#100): NetworkManager läuft und verwaltet kabelgebundene
+#   Karten. Unter Ubuntu lässt /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf
+#   alles außer WLAN und Mobilfunk unverwaltet. Die gleichnamige Datei aus build/overlay verdeckt
+#   sie. Geprüft werden die Einstellungen, die NetworkManager wirklich liest, und der Zustand jeder
+#   kabelgebundenen Karte. nmcli läuft mit LC_ALL=C, sonst stünde der Zustand übersetzt da. Eine
+#   Karte kann kurz nach dem Start noch unverwaltet sein, darum wartet die Prüfung bis zu 20 s.
+selftest_netz() {
+	local cfg out bad i
+	cfg=$(NetworkManager --print-config 2>/dev/null)
+	if [[ -z $cfg ]]; then
+		echo "LF-SELFTEST: Netz: NetworkManager --print-config liefert nichts"
+		return 1
+	fi
+	if grep -Eq '^unmanaged-devices=(.*[,;])?\*([,;]|$)' <<<"$cfg"; then
+		echo "LF-SELFTEST: Netz: NetworkManager lässt Karten unverwaltet: $(grep -m1 -E '^unmanaged-devices=' <<<"$cfg")"
+		return 1
+	fi
+	if ! systemctl is-active --quiet NetworkManager.service; then
+		echo "LF-SELFTEST: Netz: NetworkManager läuft nicht"
+		return 1
+	fi
+	for ((i = 0; i < 20; i++)); do
+		out=$(LC_ALL=C nmcli --colors no -t -f DEVICE,TYPE,STATE device 2>/dev/null) || out=
+		bad=$(awk -F: '$2 == "ethernet" && $3 == "unmanaged" {printf " %s", $1}' <<<"$out")
+		[[ -n $out && -z $bad ]] && break
+		sleep 1
+	done
+	if [[ -z $out ]]; then
+		echo "LF-SELFTEST: Netz: nmcli zeigt keine Geräte"
+		return 1
+	fi
+	if [[ -n $bad ]]; then
+		echo "LF-SELFTEST: Netz: kabelgebundene Karte unverwaltet:$bad"
+		return 1
+	fi
+	echo "LF-SELFTEST: Netz: NetworkManager verwaltet kabelgebundene Karten:$(awk -F: '$2 == "ethernet" {n++; printf " %s (%s)", $1, $3} END {if (!n) printf " keine"}' <<<"$out")"
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
