@@ -267,6 +267,27 @@ persist_free_bytes() {
 	echo $((total - lastend * ss - 1048576))
 }
 
+# persist_free_number DISK   Die kleinste freie Nummer in der GPT von DISK, laut sgdisk selbst.
+persist_free_number() {
+	local out used n
+	out=$(sudo sgdisk -p "$1" 2>/dev/null) || return 1
+	used=$(awk '/^Number +Start/ {t = 1; next} t && $1 ~ /^[0-9]+$/ {print $1}' <<<"$out")
+	for ((n = 1; n <= 128; n++)); do
+		grep -qx "$n" <<<"$used" || { echo "$n"; return 0; }
+	done
+	return 1
+}
+
+# persist_new_part_ok DISK NUMMER PARTITION   Erst formatieren, wenn PARTITION nicht DISK selbst ist,
+#   ihr Eintrag NUMMER in der GPT genau $PERSIST_LABEL heißt und sie dort die einzige Partition mit
+#   dem Namen ist.
+persist_new_part_ok() {
+	local bd=$1 num=$2 part=$3
+	[[ $num =~ ^[0-9]+$ && $part != "$bd" ]] || return 1
+	[[ $(sudo sgdisk -i "$num" "$bd" 2>/dev/null | sed -n "s/^Partition name: '\(.*\)'\$/\1/p") == "$PERSIST_LABEL" ]] || return 1
+	[[ $(persist_candidates "$bd") == "$part" ]]
+}
+
 persist_create() {
 	local bd
 	bd=$(boot_disk) || { ui_msg "Persistenz" "Der Boot-Stick ist nicht sicher zu erkennen (Start aus dem RAM oder per Ventoy, oder mehrere Disks tragen das Label der ISO)."; return 1; }
@@ -306,15 +327,21 @@ persist_create() {
 		crypt=0
 	fi
 	ui_info "Persistenz" "Lege Partition an …"
-	local sz="0"
+	local sz="0" num part
 	[[ $size != 0 ]] && sz="+${size}G"
-	run sudo sgdisk -n "0:0:$sz" -t 0:8300 -c "0:$PERSIST_LABEL" "$bd" || { ui_msg "Persistenz" "Partition konnte nicht angelegt werden. Siehe Protokoll."; return 1; }
-	local num part
-	num=$(sudo sgdisk -p "$bd" | awk -v l="$PERSIST_LABEL" '$0 ~ l {print $1}' | tail -n1)
+	# Die Nummer steht vorher fest (#102). Aus der Tabelle danach lässt sie sich nicht sicher lesen:
+	# Auch andere Partitionen können LF-DATA im Namen tragen.
+	num=$(persist_free_number "$bd") || { ui_msg "Persistenz" "In der Partitionstabelle des Sticks ist keine Nummer frei."; return 1; }
+	run sudo sgdisk -n "$num:0:$sz" -t "$num:8300" -c "$num:$PERSIST_LABEL" "$bd" || { ui_msg "Persistenz" "Partition konnte nicht angelegt werden. Siehe Protokoll."; return 1; }
 	run sudo partx -a -n "$num" "$bd" || run sudo partx -u "$bd" || true
 	sudo udevadm settle
 	part=$(part_path "$bd" "$num")
-	[[ -b $part ]] || { ui_msg "Persistenz" "Die neue Partition $part ist noch nicht sichtbar. Bitte neu starten, der Speicher wird dann eingerichtet."; return 1; }
+	is_blockdev "$part" || { ui_msg "Persistenz" "Die neue Partition $part ist noch nicht sichtbar. Bitte neu starten, der Speicher wird dann eingerichtet."; return 1; }
+	if ! persist_new_part_ok "$bd" "$num" "$part"; then
+		log "Persistenz: $part ist nicht sicher die neue Partition $num ($PERSIST_LABEL) auf $bd, nichts formatiert"
+		ui_msg "Persistenz" "Die neue Partition $part lässt sich nicht sicher als $PERSIST_LABEL auf dem Stick erkennen. Es wird nichts formatiert.\n\nSiehe Protokoll."
+		return 1
+	fi
 	local fsdev=$part
 	if ((crypt)); then
 		printf '%s' "$pw" | run sudo cryptsetup luksFormat --batch-mode --type luks2 --label "$PERSIST_LABEL" --key-file - "$part" || return 1

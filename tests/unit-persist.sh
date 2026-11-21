@@ -21,6 +21,8 @@ T=$(mktemp -d)
 . rescue/lib/disks.sh
 # shellcheck disable=SC1091
 . rescue/lib/persist.sh
+# shellcheck disable=SC1091
+. rescue/lib/clone.sh # part_path
 
 fails=0
 check() {
@@ -151,9 +153,50 @@ sudo() {
 		done <<<"$PARTS"
 		;;
 	"cryptsetup open "*) : >"$PERSIST_MAPPER_DEV" ;;
+	"sgdisk -p "*) sgdisk_p "$3" ;;
+	"sgdisk -n "*) sgdisk_n "$@" || return ;;
+	"sgdisk -i "*) sgdisk_i "$3" "$4" ;;
 	esac
 	return 0
 }
+# sgdisk wie gdisk 1.0.10, nur was persist_create braucht. Die Nummer einer Partition ist die Zahl
+# am Ende ihres Pfads in PARTS.
+#   -p DISK   Kopf, dann je Partition eine Zeile, nach Nummer sortiert. SGDISK_P_LEER=1: keine Zeile.
+#   -n N:0:GRÖSSE -t N:TYP -c N:NAME DISK   legt Partition N an, mit N=0 die erste freie. Eine
+#             belegte Nummer oder eine über 128 lehnt es ab. NEU_UNSICHTBAR=1: kein Blockgerät.
+#             SGDISK_N_NAME: Diesen Namen sehen lsblk und blkid statt NAME.
+#   -i N DISK der Name von Partition N. SGDISK_I_NAME ersetzt ihn.
+sgdisk_p() {
+	local path disk partlabel label type
+	printf 'Disk %s: 30031872 sectors, 14.3 GiB\nModel: USB Flash Disk\nPartition table holds up to 128 entries\n\nNumber  Start (sector)    End (sector)  Size       Code  Name\n' "$1"
+	[[ ${SGDISK_P_LEER:-0} == 1 ]] && return 0
+	while read -r path disk partlabel label type; do
+		[[ $disk == "$1" ]] && printf '%4s %15s %15s   %-10s %-5s %s\n' "${path##*[!0-9]}" 2048 4095 "1024.0 KiB" 8300 "${partlabel#-}"
+	done <<<"$PARTS" | sort -n
+	return 0
+}
+sgdisk_n() {
+	local n=${3%%:*} name=${SGDISK_N_NAME:-${7#*:}} disk=$8
+	if [[ $n == 0 ]]; then
+		n=1
+		while grep -q "^$(part_path "$disk" "$n") " <<<"$PARTS"; do n=$((n + 1)); done
+	fi
+	((n <= 128)) && ! grep -q "^$(part_path "$disk" "$n") " <<<"$PARTS" || return 4
+	PARTS+=$'\n'"$(part_path "$disk" "$n") $disk $name - -"
+	[[ ${NEU_UNSICHTBAR:-0} == 1 ]] || BLOCKDEVS+=" $(part_path "$disk" "$n")"
+}
+sgdisk_i() {
+	local p path disk partlabel label type
+	p=$(part_path "$2" "$1")
+	while read -r path disk partlabel label type; do
+		[[ $path == "$p" ]] || continue
+		printf "Partition GUID code: 0FC63DAF-8483-4772-8E79-3D69D8477DE4 (Linux filesystem)\nPartition name: '%s'\n" "${SGDISK_I_NAME:-${partlabel#-}}"
+		return 0
+	done <<<"$PARTS"
+	echo "Partition #$1 does not exist."
+}
+ui_menu() { echo 2; }
+ui_info() { :; }
 mountpoint() { return 1; }
 log() { printf '%s\n' "$*" >>"$T/log"; }
 run() { "$@"; }
@@ -397,6 +440,74 @@ persist_startup
 result
 check "nur eine, aber der Stick ist nicht sicher erkannt: kein Hinweis auf mehrere" '[[ $MSG != *"mehrere Partitionen"* ]]'
 LF_BOOT_ENV="$T/fehlt"
+
+# ---------------------------------------------------------------------------
+echo "Anlegen: formatiert wird genau die neue Partition (#102):"
+# formatiert   Geräte, auf denen luksFormat oder mkfs lief, in dieser Reihenfolge.
+formatiert() { grep -E '^(cryptsetup luksFormat|mkfs)' "$T/sudo" 2>/dev/null | awk '{print $NF}' | tr '\n' ' '; }
+# neu [ZEILE…]   Ein Stick wie stick(), noch ohne LF-DATA, mit 4 GiB frei und weiteren Partitionen
+#   (Zeilen wie in PARTS). Ja zur Verschlüsselung.
+neu() {
+	local z
+	stick
+	PARTS="/dev/sda1 /dev/sda ISO9660 LEUCHTFEUER iso9660
+/dev/sda2 /dev/sda Appended2 LF_EFI vfat
+/dev/sda3 /dev/sda Gap1 - -"
+	for z in "$@"; do PARTS+=$'\n'"$z"; done
+	fresh
+	PASSPHRASE="geheim-genug" YESNO_RC=0
+}
+persist_free_bytes() { echo $((4 * 1073741824)); }
+neu
+check "die Nummer kommt aus der Tabelle von sgdisk: die erste freie" '[[ $(persist_free_number /dev/sda) == 4 ]]'
+persist_create
+rc=$?
+result
+check "frischer Stick: Partition 4 hinter der Lücke, mit fester Nummer angelegt" '[[ $SUDO == *"sgdisk -n 4:0:+2G -t 4:8300 -c 4:LF-DATA /dev/sda"* ]]'
+check "verschlüsselt und formatiert wird nur sie, dann eingebunden" '[[ $rc == 0 && $(formatiert) == "/dev/sda4 /dev/mapper/lf-data " && $BIND == bind ]]'
+neu
+YESNO_RC=1
+persist_create
+rc=$?
+result
+check "ohne Verschlüsselung: mkfs nur auf ihr" '[[ $rc == 0 && $(formatiert) == "/dev/sda4 " ]]'
+neu "/dev/sda5 /dev/sda LF-DATA-alt - ext4"
+persist_create
+rc=$?
+result
+check "eine Partition LF-DATA-alt hinter einer Lücke bleibt unberührt" '[[ $rc == 0 && $(formatiert) == "/dev/sda4 /dev/mapper/lf-data " ]]'
+neu
+SGDISK_P_LEER=1
+persist_create
+rc=$?
+result
+check "nennt sgdisk keine Partition: nichts formatiert, auch nicht der ganze Stick" '[[ $rc != 0 && -z $(formatiert) ]]'
+unset SGDISK_P_LEER
+neu
+SGDISK_I_NAME=Gap9
+persist_create
+rc=$?
+result
+check "heißt der neue Eintrag nicht genau LF-DATA: nichts formatiert, mit Meldung" '[[ $rc != 0 && -z $(formatiert) && $MSG == *"nicht sicher als LF-DATA"* ]]'
+unset SGDISK_I_NAME
+neu
+NEU_UNSICHTBAR=1
+persist_create
+rc=$?
+result
+check "erscheint die neue Partition nicht: nichts formatiert" '[[ $rc != 0 && -z $(formatiert) && $MSG == *"noch nicht sichtbar"* ]]'
+unset NEU_UNSICHTBAR
+neu
+SGDISK_N_NAME=Gap9 SGDISK_I_NAME=LF-DATA
+persist_create
+rc=$?
+result
+check "sieht lsblk die neue Partition nicht als einzige LF-DATA: nichts formatiert" '[[ $rc != 0 && -z $(formatiert) && $MSG == *"nicht sicher als LF-DATA"* ]]'
+unset SGDISK_N_NAME SGDISK_I_NAME
+neu
+PARTS=""
+for n in {1..128}; do PARTS+="/dev/sda$n /dev/sda P$n - -"$'\n'; done
+check "sind alle 128 Nummern belegt, gibt es keine" '! persist_free_number /dev/sda >/dev/null'
 persist_free_bytes() { echo 0; }
 
 # ---------------------------------------------------------------------------
