@@ -110,6 +110,6 @@ Claude
 Fernzugriff
 -----------
 
-Werkzeuge > SSH schaltet SSH ein und zeigt Adresse und Einmal-Passwort. Eine laufende Rettung siehst du per SSH mit `tmux attach -t lf-rettung`.
+Werkzeuge > SSH schaltet SSH ein und zeigt Adresse und Einmal-Passwort. Eine laufende Rettung siehst du per SSH mit `tmux attach -t lf-rettung`. Ausschalten dort beendet alle SSH-Sitzungen samt allem, was darin läuft, und das Passwort gilt danach nicht mehr. Wer per SSH angemeldet war, hatte root: Was er gestartet hat, kann weiterlaufen. Sicher endet das nur mit einem Neustart.
 
 Sonst bietet Leuchtfeuer im Netz nichts an. rpcbind ist aus, NFS-Freigaben hängst du darum mit NFSv4 ein (`mount -t nfs4 server:/pfad /mnt/ziel`). NFSv3 geht nur mit `-o nolock`, Sperren bleiben dann auf diesem Rechner.

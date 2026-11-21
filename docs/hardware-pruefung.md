@@ -152,3 +152,14 @@ sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
 Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`. Die Datei gehört ins Issue.
+
+10 SSH
+------
+
+1. **Einschalten:** Werkzeuge > SSH. Von einem zweiten Rechner mit dem Einmal-Passwort anmelden und dort `sleep 600 &` starten.
+2. **Ausschalten** auf tty1 unter Werkzeuge > SSH.
+   Erwartet:
+   - Die Verbindung auf dem zweiten Rechner bricht sofort ab.
+   - Der Dialog nennt 1 beendete Sitzung und rät zum Neustart.
+   - In der Shell (Werkzeuge > Shell) zeigen `loginctl list-sessions` keine Sitzung von SSH und `pgrep -a sleep` nichts mehr.
+   - Ein neuer Versuch mit dem alten Passwort scheitert, auch nachdem SSH wieder eingeschaltet ist. Dann gilt nur das neue.

@@ -63,7 +63,7 @@ tools_mem() {
 
 tools_ssh() {
 	if systemctl is-active -q ssh; then
-		ui_yesno "SSH" "SSH ist an. Ausschalten?" && run sudo systemctl stop ssh
+		ui_yesno "SSH" "SSH ist an. Ausschalten?\n\nDas beendet auch alle offenen SSH-Sitzungen." && tools_ssh_off
 		return 0
 	fi
 	is_online || { ui_msg "SSH" "Keine Netzwerkverbindung."; return 0; }
@@ -79,6 +79,57 @@ tools_ssh() {
 	ips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
 	log "SSH eingeschaltet (Einmal-Passwort gesetzt), Hostschlüssel: ${fps//$'\n'/, }"
 	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
+}
+
+# tools_ssh_off   Schaltet SSH aus (GHSA-45m7-28wq-mxq8): Das Einmal-Passwort gilt nicht mehr, sshd
+#   nimmt keine Verbindung mehr an, und jede SSH-Sitzung endet samt allem, was in ihr läuft, auch
+#   eine Verbindung, die noch bei der Anmeldung ist. systemctl stop allein beendet nur den sshd, der
+#   auf Verbindungen wartet: Angemeldete Sitzungen liegen in eigenen Scopes von logind, und für
+#   ssh.service gilt bei Ubuntu KillMode=process. Bleibt etwas übrig, sagt das der Dialog.
+tools_ssh_off() {
+	local re='sshd|sshd-session|sshd-auth' id n=0 sessions procs msg="SSH ist aus."
+	local -a left=()
+	if run sudo usermod -p '!' "$(id -un)"; then
+		msg+=" Das Einmal-Passwort gilt nicht mehr."
+	else
+		left+=("Das Einmal-Passwort ließ sich nicht sperren.")
+	fi
+	run sudo systemctl stop ssh.socket ssh.service
+	# Erst alle Prozesse von sshd: Danach entsteht keine Sitzung mehr. Dann, was in den Sitzungen
+	# noch läuft, auch im Hintergrund.
+	run sudo pkill -KILL -x "$re"
+	for id in $(tools_ssh_sessions); do
+		run sudo loginctl kill-session --signal=SIGKILL "$id"
+		run sudo loginctl terminate-session "$id"
+		n=$((n + 1))
+	done
+	# logind räumt eine Sitzung erst ab, wenn ihr Scope leer ist.
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		sessions=$(tools_ssh_sessions)
+		procs=$(sudo pgrep -l -x "$re")
+		[[ -z $sessions && -z $procs ]] && break
+		sleep 0.3
+	done
+	[[ -n $sessions ]] && left+=("Noch offene SSH-Sitzungen: ${sessions//$'\n'/, }")
+	[[ -n $procs ]] && left+=("Noch laufende Prozesse von sshd: ${procs//$'\n'/, }")
+	log "SSH ausgeschaltet, beendete SSH-Sitzungen: $n${left[*]:+. ${left[*]}}"
+	((n == 1)) && msg+="\n\n1 offene SSH-Sitzung wurde beendet."
+	((n > 1)) && msg+="\n\n$n offene SSH-Sitzungen wurden beendet."
+	((${#left[@]})) && msg+="\n\nNicht alles ist beendet:$(printf '\\n   %s' "${left[@]}")"
+	((n || ${#left[@]})) && msg+="\n\nWer per SSH angemeldet war, hatte root. Was er gestartet hat, kann weiterlaufen. Sicher endet das nur mit einem Neustart (Beenden > Neustart)."
+	ui_msg "SSH" "$msg"
+	return 0
+}
+
+# tools_ssh_sessions   IDs der Sitzungen von logind, die sshd angelegt hat (PAM-Dienst sshd), je
+#   Zeile eine. Dazu zählen auch Sitzungen, die gerade enden, solange in ihnen noch etwas läuft.
+tools_ssh_sessions() {
+	local id
+	for id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+		[[ $id =~ ^[[:alnum:]]+$ ]] || continue
+		[[ $(loginctl show-session "$id" -p Service --value 2>/dev/null) == sshd ]] && echo "$id"
+	done
+	return 0
 }
 
 # tools_ssh_fingerprints   SHA256-Fingerabdrücke der Hostschlüssel, je Zeile "   SHA256:… (TYP)".
