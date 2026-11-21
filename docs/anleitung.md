@@ -111,3 +111,5 @@ Fernzugriff
 -----------
 
 Werkzeuge > SSH schaltet SSH ein und zeigt Adresse und Einmal-Passwort. Eine laufende Rettung siehst du per SSH mit `tmux attach -t lf-rettung`.
+
+Sonst bietet Leuchtfeuer im Netz nichts an. rpcbind ist aus, NFS-Freigaben hängst du darum mit NFSv4 ein (`mount -t nfs4 server:/pfad /mnt/ziel`). NFSv3 geht nur mit `-o nolock`, Sperren bleiben dann auf diesem Rechner.

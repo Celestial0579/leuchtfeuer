@@ -67,6 +67,7 @@ jobs:
       # Loop-Gerät, solange ein Job (Klon, Rettung von Claude) daraus lesen kann.
       # Netz: NetworkManager verwaltet kabelgebundene Karten, LAN geht ohne Zutun. Was das Overlay
       # ins System legt, prüft selftest_owner. Echt prüft es selftest_netz.
+      # Im Netz lauscht nichts außer SSH, rpcbind ist im Overlay maskiert. Echt prüft es selftest_lauscht.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue

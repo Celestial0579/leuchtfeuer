@@ -65,7 +65,7 @@ Was ist drin
 | Klonen | partclone, fsarchiver, clonezilla, qemu-img (VHDX), wimtools, nbd-client (Umzug in eine VM) |
 | Dateisysteme | NTFS, ext2–4, XFS, Btrfs, exFAT, FAT, F2FS, HFS+, LVM, mdadm, LUKS, BitLocker (dislocker) |
 | Windows | chntpw, efibootmgr, ms-sys |
-| Netz | NetworkManager (nmtui, WLAN), SSH (auf Wunsch), rsync, rclone, SMB, NFS |
+| Netz | NetworkManager (nmtui, WLAN), SSH (auf Wunsch), rsync, rclone, SMB, NFS (v4, v3 mit `nolock`) |
 | Claude | Claude Code CLI, Claude Desktop (offizielles Anthropic-Paket, Linux-Beta) |
 
 Selbst bauen

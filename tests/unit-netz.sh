@@ -6,6 +6,9 @@
 #
 # Der Selbsttest der ISO prüft das mit dem echten NetworkManager (selftest_netz). Hier sind
 # NetworkManager, systemctl, nmcli und sleep Attrappen, selftest_netz kommt aus rescue/lf.
+#
+# Dazu (#103): Im Netz lauscht nichts außer SSH, wenn es an ist. rpcbind aus nfs-common ist im
+# Overlay maskiert. selftest_lauscht prüft das in der ISO, hier mit Attrappen für systemctl und ss.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -142,6 +145,104 @@ reset
 DEVS='lo:loopback:connected (externally)\nwlp1s0:wifi:unmanaged'
 run
 check 'ohne kabelgebundene Karte: ok, „keine“ (WLAN prüft der Test nicht)' '[[ $RC == 0 && $OUT == *"Karten: keine" ]]'
+
+# --- #103: im Netz lauscht nichts außer SSH, rpcbind ist maskiert ---------------------------------
+echo "Image (rpcbind, #103):"
+for u in rpcbind.socket rpcbind.service; do
+	check "build/overlay maskiert $u (Verweis auf /dev/null unter /etc/systemd/system)" "[[ -L build/overlay/etc/systemd/system/$u && \$(readlink build/overlay/etc/systemd/system/$u) == /dev/null ]]"
+done
+check "chroot-setup.sh schaltet rpcbind nicht wieder ein" '! grep -q rpcbind build/chroot-setup.sh'
+check "der Selbsttest ruft selftest_lauscht auf" 'grep -qx "	selftest_lauscht || ok=0" rescue/lf'
+
+FN=$(sed -n '/^selftest_lauscht() {$/,/^}$/p' rescue/lf)
+if [[ -z $FN ]]; then
+	echo "  FAIL selftest_lauscht fehlt in rescue/lf"
+	exit 1
+fi
+eval "$FN"
+
+# Attrappen. ENABLED ist die Antwort von systemctl is-enabled für beide rpcbind-Units, SSH der
+# Exit-Code von systemctl is-active für ssh.service und ssh.socket, SS die Ausgabe von ss -Htuln.
+systemctl() {
+	case $* in
+	"is-enabled rpcbind.socket" | "is-enabled rpcbind.service") echo "$ENABLED"; [[ $ENABLED == enabled ]] ;;
+	"is-active --quiet ssh.service ssh.socket") return "$SSH" ;;
+	*) echo "systemctl $*" >>"$T/unerwartet"; return 9 ;;
+	esac
+}
+ss() {
+	[[ $* == -Htuln ]] || { echo "ss $*" >>"$T/unerwartet"; return 9; }
+	((SS_RC == 0)) || return "$SS_RC"
+	printf '%b\n' "$SS"
+}
+LOOP='udp   UNCONN 0      0         127.0.0.54:53        0.0.0.0:*
+udp   UNCONN 0      0      127.0.0.53%lo:53        0.0.0.0:*
+tcp   LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*
+tcp   LISTEN 0      4096       127.0.0.1:2222      0.0.0.0:*
+tcp   LISTEN 0      128            [::1]:631          [::]:*'
+RPCBIND='udp   UNCONN 0      0            0.0.0.0:111        0.0.0.0:*
+udp   UNCONN 0      0               [::]:111           [::]:*
+tcp   LISTEN 0      4096         0.0.0.0:111        0.0.0.0:*
+tcp   LISTEN 0      4096            [::]:111           [::]:*'
+SSHD='tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*
+tcp   LISTEN 0      128             [::]:22            [::]:*'
+DHCP='udp   UNCONN 0      0      10.0.2.15%enp0s2:68        0.0.0.0:*
+udp   UNCONN 0      0      [fe80::5054:ff:fe12:3456]%enp0s2:546           [::]:*'
+lrun() {
+	: >"$T/unerwartet"
+	OUT=$(selftest_lauscht)
+	RC=$?
+}
+lreset() { ENABLED=masked SSH=3 SS_RC=0 SS=$LOOP; }
+
+echo "selftest_lauscht mit Attrappen:"
+lreset
+ENABLED=enabled
+SS="$LOOP
+$RPCBIND"
+lrun
+check "wie bisher (rpcbind eingeschaltet): FAIL, nennt die Unit" '[[ $RC == 1 && $OUT == *"rpcbind.socket ist nicht maskiert (enabled)"* ]]'
+
+lreset
+lrun
+check "rpcbind maskiert, nur loopback (resolved, Attrappe des Knotens, [::1]): ok" '[[ $RC == 0 && $OUT == *"außerhalb von loopback lauscht nichts" && ! -s $T/unerwartet ]]'
+
+lreset
+SS="$LOOP
+$RPCBIND"
+lrun
+check "rpcbind maskiert, aber Port 111 offen: FAIL mit allen vier Sockets" '[[ $RC == 1 && $OUT == *"0.0.0.0:111 (udp)"* && $OUT == *"[::]:111 (udp)"* && $OUT == *"0.0.0.0:111 (tcp)"* && $OUT == *"[::]:111 (tcp)"* ]]'
+
+lreset
+SSH=0
+SS="$LOOP
+$SSHD"
+lrun
+check 'SSH eingeschaltet, sshd auf 0.0.0.0:22 und [::]:22: ok, „nur SSH“' '[[ $RC == 0 && $OUT == *"lauscht nur SSH" ]]'
+
+lreset
+SS="$LOOP
+$SSHD"
+lrun
+check "Port 22 offen, obwohl SSH aus ist: FAIL" '[[ $RC == 1 && $OUT == *"0.0.0.0:22 (tcp)"* ]]'
+
+lreset
+SS="$LOOP
+$DHCP"
+lrun
+check "DHCP-Clients (UDP 68, 546 an der Karte): ok" '[[ $RC == 0 ]]'
+
+lreset
+SS="$LOOP
+udp   UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*
+tcp   LISTEN 0      4096               *:8080             *:*"
+lrun
+check "ein anderer Dienst (mDNS, *:8080): FAIL mit beiden" '[[ $RC == 1 && $OUT == *"0.0.0.0:5353 (udp)"* && $OUT == *"*:8080 (tcp)"* ]]'
+
+lreset
+SS_RC=1
+lrun
+check "liefert ss nichts: FAIL" '[[ $RC == 1 && $OUT == *"ss liefert nichts"* ]]'
 
 echo
 ((fails == 0)) && echo "Alle Tests bestanden." || {
