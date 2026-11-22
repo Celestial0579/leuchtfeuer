@@ -68,6 +68,8 @@ angeschlossen sind.
 
 1. Frischen Stick starten. Beim ersten Start einen verschlüsselten Speicher mit 2 GiB anlegen, neu starten, Passphrase eingeben.
    Erwartet: `findmnt /persist` zeigt die Partition `LF-DATA` auf dem Stick, mit `nodev,nosuid`.
+   - **Legacy-Start danach (#106):** Den Stick am Rechner mit BIOS oder CSM starten.
+   - Erwartet: Er startet wie vor dem Anlegen. In der Shell zeigt `sudo od -An -tx1 -j 462 -N 1 /dev/sdX` den Wert `80`, das Boot-Flag im MBR. `sdX` ist `LF_BOOT_DISK` aus `/run/lf-boot.env`.
 2. Dasselbe mit einem unverschlüsselten Speicher auf dem zweiten Stick: Der Assistent fragt vor dem Einbinden nach.
 3. Eine Partition mit dem Label `LF-DATA` auf einer anderen Disk anlegen und anschließen: Der Assistent verwendet sie nie, er weist nur auf sie hin.
    - Auf dem Stick aus Schritt 2 an einem anderen Rechner eine zweite Partition mit dem Namen `LF-DATA` anlegen (`sudo sgdisk -n 0:0:+600M -c 0:LF-DATA /dev/sdX`, `/dev/sdX` ist der Stick), wie es frühere Betas bei einem „Ja“ beim Start taten. Dann davon starten.

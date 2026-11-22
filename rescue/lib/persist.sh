@@ -295,15 +295,67 @@ persist_new_part_ok() {
 	[[ $(persist_candidates "$bd") == "$part" ]]
 }
 
+# Der MBR des Sticks (#106): xorriso legt mit --mbr-force-bootable (make_iso in build/build.sh)
+# neben dem Schutz-Eintrag einen zweiten Eintrag mit Boot-Flag an, 16 Byte ab Byte 462. Manche
+# BIOS starten im Legacy-Modus nur von einer Disk mit aktiver Partition. sgdisk schreibt den
+# Schutz-MBR bei jeder Änderung der GPT neu und lässt den Eintrag weg (sgdisk 1.0.10, -e und -n).
+PERSIST_MBR_LEER=00000000000000000000000000000000
+
+# persist_mbr_eintrag DISK   Eintrag 2 im MBR von DISK als 32 Hex-Zeichen.
+persist_mbr_eintrag() {
+	sudo dd if="$1" bs=512 count=1 status=none 2>/dev/null | od -An -v -tx1 -j 462 -N 16 | tr -d ' \n'
+}
+
+# persist_mbr_merken DISK   Eintrag 2, wenn er das Boot-Flag trägt, sonst nichts.
+persist_mbr_merken() {
+	local e
+	e=$(persist_mbr_eintrag "$1")
+	[[ $e =~ ^80[0-9a-f]{30}$ ]] && echo "$e"
+	return 0
+}
+
+# persist_mbr_zurueck DISK EINTRAG   Schreibt den gemerkten Eintrag 2 zurück, wenn sgdisk ihn
+#   geleert hat. Steht dort etwas anderes, bleibt es, und die Rückgabe ist 1, ebenso, wenn der
+#   Eintrag danach nicht dasteht. Ohne gemerkten Eintrag tut es nichts.
+persist_mbr_zurueck() {
+	local bd=$1 alt=$2 jetzt
+	[[ $alt =~ ^80[0-9a-f]{30}$ ]] || return 0
+	jetzt=$(persist_mbr_eintrag "$bd")
+	[[ $jetzt == "$alt" ]] && return 0
+	if [[ $jetzt != "$PERSIST_MBR_LEER" ]]; then
+		log "Persistenz: Eintrag 2 im MBR von $bd ist nicht leer (${jetzt:-nicht lesbar}), das Boot-Flag wird nicht zurückgeschrieben"
+		return 1
+	fi
+	printf '%b' "$(sed 's/../\\x&/g' <<<"$alt")" | run sudo dd of="$bd" bs=1 seek=462 count=16 conv=notrunc,fsync status=none
+	jetzt=$(persist_mbr_eintrag "$bd")
+	if [[ $jetzt != "$alt" ]]; then
+		log "Persistenz: Eintrag 2 im MBR von $bd ließ sich nicht zurückschreiben (${jetzt:-nicht lesbar})"
+		return 1
+	fi
+	log "Persistenz: Boot-Flag im MBR von $bd zurückgeschrieben (Eintrag 2)"
+}
+
+# persist_mbr_sichern DISK EINTRAG   Wie persist_mbr_zurueck, sagt aber, wenn das nicht ging, einmal
+#   je persist_create (mbr_gemeldet ist dort lokal).
+persist_mbr_sichern() {
+	persist_mbr_zurueck "$1" "$2" && return 0
+	((${mbr_gemeldet:-0})) && return 0
+	mbr_gemeldet=1
+	ui_msg "Persistenz" "Das Boot-Flag im MBR des Sticks ließ sich nicht zurückschreiben (siehe Protokoll). Im Legacy-Modus (BIOS) starten ihn manche Rechner dann nicht mehr, per UEFI startet er wie bisher."
+}
+
 persist_create() {
-	local bd
+	local bd mbr mbr_gemeldet=0
 	bd=$(boot_disk) || { ui_msg "Persistenz" "Der Boot-Stick ist nicht sicher zu erkennen (Start aus dem RAM oder per Ventoy, oder mehrere Disks tragen das Label der ISO)."; return 1; }
 	boot_medium_unique || { ui_msg "Persistenz" "Beim Start trug eine weitere Disk die Kennung dieses Sticks. Welche Disk der Stick ist, lässt sich nicht sicher sagen. Es wird kein Speicher angelegt.\n\nFremde Disks abziehen und neu starten."; return 1; }
 	if [[ -n $(persist_candidates "$bd") ]]; then
 		ui_msg "Persistenz" "Auf dem Stick gibt es schon eine Partition mit dem Namen $PERSIST_LABEL. Eine zweite wird nicht angelegt.\n\nEntsperren: Werkzeuge > Persistenter Speicher > Entsperren und einhängen."
 		return 1
 	fi
+	# sgdisk lässt den Eintrag mit dem Boot-Flag im MBR weg (#106), er kommt danach zurück.
+	mbr=$(persist_mbr_merken "$bd")
 	sudo sgdisk -e "$bd" >/dev/null 2>&1 || true # Backup-GPT ans echte Ende
+	persist_mbr_sichern "$bd" "$mbr"
 	local free
 	free=$(persist_free_bytes "$bd")
 	free=${free:-0}
@@ -339,7 +391,12 @@ persist_create() {
 	# Die Nummer steht vorher fest (#102). Aus der Tabelle danach lässt sie sich nicht sicher lesen:
 	# Auch andere Partitionen können LF-DATA im Namen tragen.
 	num=$(persist_free_number "$bd") || { ui_msg "Persistenz" "In der Partitionstabelle des Sticks ist keine Nummer frei."; return 1; }
-	run sudo sgdisk -n "$num:0:$sz" -t "$num:8300" -c "$num:$PERSIST_LABEL" "$bd" || { ui_msg "Persistenz" "Partition konnte nicht angelegt werden. Siehe Protokoll."; return 1; }
+	if ! run sudo sgdisk -n "$num:0:$sz" -t "$num:8300" -c "$num:$PERSIST_LABEL" "$bd"; then
+		persist_mbr_sichern "$bd" "$mbr"
+		ui_msg "Persistenz" "Partition konnte nicht angelegt werden. Siehe Protokoll."
+		return 1
+	fi
+	persist_mbr_sichern "$bd" "$mbr"
 	run sudo partx -a -n "$num" "$bd" || run sudo partx -u "$bd" || true
 	sudo udevadm settle
 	part=$(part_path "$bd" "$num")
