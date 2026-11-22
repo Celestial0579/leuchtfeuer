@@ -856,7 +856,8 @@ chain_ok() {
 #   Jeder Prozess im Dienst (auch in einer Unter-cgroup) muss vom Hauptprozess abstammen. Andere
 #   stehen danach in KEPT_FOREIGN,
 #   stop_new_units beendet sie. Prozesse prüfen kann nur root. Was root an einem laufenden Prozess
-#   geändert hat (etwa mit ptrace), sieht keine Prüfung: Sicher ist nur ein Neustart.
+#   geändert hat, sieht keine Prüfung (ptrace ist ab dem Start gesperrt, #85): Sicher ist nur ein
+#   Neustart.
 KEPT_FOREIGN=()
 
 # kept_fragment ART ARGV…   Ist die Unit-Datei (ui[FragmentPath]) Byte für Byte die, die systemd-run
