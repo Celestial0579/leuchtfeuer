@@ -1063,24 +1063,22 @@ selftest_claude_user() {
 }
 
 # selftest_kein_su [WURZEL]   lf-claude wechselt mit su zu keinem anderen Benutzer
-#   (GHSA-j332-2v26-m4qm): Die Anmeldung ist so, wie pam_pruefen es verlangt (kein leeres
-#   Passwort, kein nullok, su nur für root und die Gruppe sudo), und su zum Live-Benutzer
-#   scheitert als lf-claude. Mit beiden su: dem von util-linux und dem von sudo-rs. Das liegt nicht
-#   im PATH, ist aber setuid root und nutzt dieselben PAM-Dienste (su, su-l).
+#   (GHSA-j332-2v26-m4qm). Geprüft wird nur die Konfiguration, ohne su und ohne Anmeldung: Sie ist
+#   so, wie pam_pruefen es verlangt (kein leeres Passwort, kein nullok, su nur für root und die
+#   Gruppe sudo), und das Passwort des Live-Benutzers ist gesperrt, ab dem Start, bis SSH beim
+#   Einschalten ein Einmal-Passwort setzt. Die PAM-Dienste su und su-l nutzen beide su: das von
+#   util-linux und das von sudo-rs (/usr/lib/cargo/bin/su, nicht im PATH, aber setuid root).
 selftest_kein_su() {
-	local root=${1:-/} good=1 out s
+	local root=${1:-/} good=1 out
 	if ! out=$(pam_pruefen "$root"); then
 		sed 's/^/LF-SELFTEST: Anmeldung: /' <<<"$out"
 		good=0
 	fi
-	for s in su "${root%/}/usr/lib/cargo/bin/su"; do
-		[[ $s == su || -x $s ]] || continue
-		if selftest_as timeout 10 "$s" rescue -c true >/dev/null 2>&1; then
-			echo "LF-SELFTEST: lf-claude: $s zum Live-Benutzer gelang"
-			good=0
-		fi
-	done
-	((good)) && echo "LF-SELFTEST: lf-claude: kein su zum Live-Benutzer, kein leeres Passwort, kein nullok"
+	if ! out=$(pam_gesperrt "$root" rescue); then
+		echo "LF-SELFTEST: Anmeldung: $out"
+		good=0
+	fi
+	((good)) && echo "LF-SELFTEST: Anmeldung: kein leeres Passwort, kein nullok, su nur für root und die Gruppe sudo, Passwort von rescue gesperrt"
 	((good))
 }
 

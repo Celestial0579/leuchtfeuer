@@ -12,13 +12,16 @@
 #     /usr/share/pam-configs/unix, denn daraus schreibt pam-auth-update common-auth neu.
 #   - su erlaubt den Wechsel nur root und der Gruppe sudo (pam_wheel mit use_uid, gleich nach
 #     pam_rootok), also nie lf-claude, egal welches Passwort ein Konto hat.
+#   - Auch in gshadow ist kein Passwort leer (newgrp, sg).
 # pam_haerten richtet das beim Bau ein (chroot-setup.sh). pam_pruefen prüft es beim Bau vor dem
-# squashfs (build.sh) und im laufenden System (Selbsttest).
+# squashfs (build.sh) und im laufenden System (Selbsttest), pam_gesperrt dort zusätzlich, dass das
+# Passwort des Live-Benutzers gesperrt ist.
 
 PAM_WHEEL_LINE='auth       requisite  pam_wheel.so use_uid group=sudo'
 
-# pam_haerten WURZEL   Entfernt nullok aus PAM unter WURZEL und setzt pam_wheel gleich nach
-#   pam_rootok in su ein, dann pam_pruefen. Ein zweiter Aufruf ändert nichts mehr.
+# pam_haerten WURZEL   Entfernt nullok aus PAM unter WURZEL, setzt pam_wheel gleich nach
+#   pam_rootok in su ein und sperrt leere Passwörter in gshadow, dann pam_pruefen. Ein zweiter
+#   Aufruf ändert nichts mehr.
 pam_haerten() {
 	local root=${1%/} f
 	local -a files=()
@@ -28,6 +31,9 @@ pam_haerten() {
 	if ((${#files[@]})); then sed -i -E '/^[[:space:]]*#/!s/[[:space:]]+nullok\b//g' "${files[@]}"; fi
 	if [[ -f $root/etc/pam.d/su ]] && ! grep -qxF "$PAM_WHEEL_LINE" "$root/etc/pam.d/su"; then
 		sed -i "/^auth[[:space:]]\+sufficient[[:space:]]\+pam_rootok\.so[[:space:]]*\$/a $PAM_WHEEL_LINE" "$root/etc/pam.d/su"
+	fi
+	if [[ -f $root/etc/gshadow ]] && grep -qE '^[^:]+::' "$root/etc/gshadow"; then
+		sed -i -E 's/^([^:]+)::/\1:!:/' "$root/etc/gshadow"
 	fi
 	pam_pruefen "$root"
 }
@@ -39,7 +45,7 @@ pam_auth() {
 
 # pam_pruefen WURZEL   Nennt jede Abweichung unter WURZEL in einer Zeile, Rückgabe 1, wenn es
 #   eine gibt: nullok in PAM, su ohne pam_wheel gleich nach pam_rootok, su-l nicht über su, ein
-#   Konto mit leerem Passwort.
+#   Konto oder eine Gruppe mit leerem Passwort.
 pam_pruefen() {
 	local root=${1%/} f bad=0 leer
 	local -a auth=()
@@ -62,12 +68,30 @@ pam_pruefen() {
 		echo "su-l: auth nicht zuerst aus su ($root/etc/pam.d/su-l)"
 		bad=1
 	fi
-	if [[ ! -f $root/etc/shadow ]] || ! leer=$(awk -F: 'NF > 1 && $2 == "" {printf "%s%s", s, $1; s = " "}' "$root/etc/shadow"); then
-		echo "$root/etc/shadow nicht lesbar"
-		bad=1
-	elif [[ -n $leer ]]; then
-		echo "leeres Passwort: $leer"
-		bad=1
-	fi
+	for f in shadow gshadow; do
+		if [[ ! -f $root/etc/$f ]] || ! leer=$(awk -F: 'NF > 1 && $2 == "" {printf "%s%s", s, $1; s = " "}' "$root/etc/$f"); then
+			echo "$root/etc/$f nicht lesbar"
+			bad=1
+		elif [[ -n $leer && $f == shadow ]]; then
+			echo "leeres Passwort: $leer"
+			bad=1
+		elif [[ -n $leer ]]; then
+			echo "leeres Passwort für Gruppen: $leer"
+			bad=1
+		fi
+	done
 	((bad == 0))
+}
+
+# pam_gesperrt WURZEL BENUTZER   Das Passwort von BENUTZER unter WURZEL ist gesperrt, beginnt also
+#   mit ! oder * (usermod --password '!', passwd -l). Sonst eine Zeile mit dem Grund, Rückgabe 1.
+pam_gesperrt() {
+	local root=${1%/} pw
+	if ! pw=$(awk -F: -v u="$2" '$1 == u {print $2; f = 1; exit} END {exit !f}' "$root/etc/shadow" 2>/dev/null); then
+		echo "Passwort von $2 nicht gefunden ($root/etc/shadow)"
+		return 1
+	fi
+	[[ $pw == '!'* || $pw == '*'* ]] && return 0
+	echo "Passwort von $2 nicht gesperrt ($root/etc/shadow)"
+	return 1
 }
