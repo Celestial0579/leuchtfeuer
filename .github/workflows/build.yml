@@ -63,6 +63,7 @@ jobs:
       # Kopier-Job nur für schreibgeschützte Quellen. Echt (sshd, qemu-nbd) prüft es selftest_p2v.
       # Hängende Disk: weiter nur mit genau derselben Disk, die Lücke wird nachgeholt (echtes ddrescue).
       # SSH: keine Hostschlüssel im ISO, eigene je Start, Fingerabdruck im Dialog.
+      # SSH aus: Das Einmal-Passwort gilt nicht mehr, alle SSH-Sitzungen enden samt allem darin.
       # Images freigeben: nie mit Gewalt, nichts anderes als die eigenen Einhängepunkte, kein
       # Loop-Gerät, solange ein Job (Klon, Rettung von Claude) daraus lesen kann.
       # Netz: NetworkManager verwaltet kabelgebundene Karten, LAN geht ohne Zutun. Was das Overlay
@@ -106,6 +107,7 @@ jobs:
           bash tests/unit-p2v.sh
           bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-netz.sh
+          bash tests/unit-ssh-aus.sh
           bash tests/unit-hang.sh
           bash tests/unit-image-release.sh
           bash tests/unit-passwort-sperre.sh
