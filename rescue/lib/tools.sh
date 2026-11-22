@@ -192,7 +192,8 @@ tools_ssh_newkeys() {
 # tools_ssh_log_sync   Anmeldungen und Fehlversuche aus dem Journal von sshd ins Protokoll des
 #   Assistenten (#99, Regel 10). Mit LogLevel VERBOSE stehen dort Zeit, Adresse und Fingerabdruck.
 #   Der Cursor in $SSHKEYS_DIR sorgt dafür, dass jede Zeile einmal kommt. Das Hauptmenü ruft das
-#   bei jedem Durchlauf auf, auch wenn SSH schon aus ist: So fehlt nichts vom Ende.
+#   bei jedem Durchlauf auf, auch wenn SSH schon aus ist: So fehlt nichts vom Ende. Das Ende einer
+#   Claude-Freigabe zählt ihn nicht zum Rückstand (files_now in lf-freigabe).
 tools_ssh_log_sync() {
 	local line dir=${SSHKEYS_DIR:-/run/lf/ssh}
 	while IFS= read -r line; do

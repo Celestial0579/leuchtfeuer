@@ -297,6 +297,7 @@ sshkeys_status_text() {
 	kein-fat) echo "Die Partition LF-SSH trägt kein FAT-Dateisystem mit dem Namen LF-SSH. Sie gilt nicht." ;;
 	zwei-dateien) echo "Auf LF-SSH liegen authorized_keys und authorized_keys.txt. Es gilt keine der beiden: eine davon löschen." ;;
 	zu-gross) echo "authorized_keys auf LF-SSH ist größer als 64 KiB und gilt nicht." ;;
+	freigabe) echo "Während einer Claude-Freigabe hat sich an den geprüften Schlüsseln von LF-SSH etwas geändert. Bis zum Neustart gilt darum keiner davon, SSH geht nur mit dem Einmal-Passwort." ;;
 	*) echo "LF-SSH ließ sich nicht lesen (journalctl -u lf-ssh-schluessel)." ;;
 	esac
 }
@@ -381,6 +382,11 @@ sshkeys_confirm() {
 		shown[i]="$name $bits $fp${c:+ $c}"
 	done
 	if ((${#keys[@]} == 0)); then
+		# Hat das Ende einer Freigabe die Schlüssel gesperrt (disable_ssh_keys in lf-freigabe), sagt
+		# der Dialog, warum keiner kommt.
+		if [[ $(sudo cat "$SSHKEYS_DIR/status" 2>/dev/null) == freigabe ]]; then
+			ui_msg "SSH-Schlüssel" "$(sshkeys_status_text freigabe)"
+		fi
 		rm -rf "$tmp"
 		return 1
 	fi

@@ -508,6 +508,14 @@ reset
 sshkeys_confirm "$HOSTFPS"
 c_rc=$?
 check "ohne Kandidaten: keine Frage, Status 1" '((c_rc == 1)) && [[ ! -e $T/dialog ]]'
+st_vorher=$(cat "$SSHKEYS_DIR/status" 2>/dev/null)
+echo freigabe >"$SSHKEYS_DIR/status"
+reset
+sshkeys_confirm "$HOSTFPS"
+c_rc=$?
+check "hat das Ende einer Freigabe sie gesperrt (lf-freigabe): sagt der Dialog es, keine Frage, Status 1" '((c_rc == 1)) && [[ ! -e $T/fragen ]] && grep -qF "Während einer Claude-Freigabe hat sich an den geprüften Schlüsseln von LF-SSH etwas geändert. Bis zum Neustart gilt darum keiner davon" "$T/dialog"'
+check "lf-freigabe schreibt genau den Zustand, den sshkeys_status_text kennt" '[[ $(sshkeys_status_text freigabe) == "Während einer Claude-Freigabe"* ]] && grep -qF "echo freigabe >\"\$SSH_DIR/status\"" rescue/bin/lf-freigabe'
+if [[ -n $st_vorher ]]; then printf '%s\n' "$st_vorher" >"$SSHKEYS_DIR/status"; else rm -f "$SSHKEYS_DIR/status"; fi
 
 echo "SSH einschalten (tools_ssh):"
 ENCRYPTED=0 YESNO=0 SSH_ACTIVE=0
