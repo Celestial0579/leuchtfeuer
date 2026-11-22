@@ -1,0 +1,22 @@
+[Unit]
+# GHSA-cmcp-h343-c4gj: Bei eingeschaltetem SSH könnte sich ein Prozess von lf-claude sonst auf
+# diesem Rechner als rescue anmelden, mit dem Einmal-Passwort, und hätte über sudo root ohne
+# Freigabe. Die Regel aus lf-claude-ssh.nft weist jede Verbindung von lf-claude auf Port 22 an eine
+# eigene Adresse ab. Sie gilt ab dem Start. ssh.service und ssh.socket starten nur mit ihr.
+Description=Leuchtfeuer: lf-claude erreicht SSH auf diesem Rechner nicht
+# Ohne die Standard-Abhängigkeiten, wie lf-ssh-hostkeys.service: Sonst entstünde ein Zyklus,
+# sobald ssh.socket beim Start aktiv ist. Nach nftables.service, falls es jemand einschaltet:
+# /etc/nftables.conf beginnt mit flush ruleset.
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=ssh.service ssh.socket shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/local/lib/lf/lf-claude-ssh.nft
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=ssh.service ssh.socket

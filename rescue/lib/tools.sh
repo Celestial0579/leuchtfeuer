@@ -75,7 +75,14 @@ tools_ssh() {
 	[[ -n $fps ]] || { ui_msg "SSH" "Die SSH-Hostschlüssel fehlen. SSH bleibt aus."; return 0; }
 	pw=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' </dev/urandom | head -c 12)
 	echo "$(id -un):$pw" | sudo chpasswd
-	run sudo systemctl start ssh
+	# ssh startet nur mit der Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt
+	# (lf-claude-ssh-sperre.service, GHSA-cmcp-h343-c4gj). Scheitert der Start, gilt das Passwort nicht.
+	if ! run sudo systemctl start ssh; then
+		run sudo usermod -p '!' "$(id -un)"
+		log "SSH ließ sich nicht starten, das Einmal-Passwort ist wieder gesperrt"
+		ui_msg "SSH" "SSH ließ sich nicht starten. Das Einmal-Passwort gilt nicht.\n\nDetails: journalctl -u ssh -u lf-claude-ssh-sperre"
+		return 0
+	fi
 	ips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
 	log "SSH eingeschaltet (Einmal-Passwort gesetzt), Hostschlüssel: ${fps//$'\n'/, }"
 	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"

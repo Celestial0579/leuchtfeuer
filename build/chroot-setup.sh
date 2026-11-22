@@ -129,6 +129,9 @@ log "Dienste"
 systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
+# ssh.service und ssh.socket starten nur mit der Regel, die lf-claude den Weg zu sshd auf diesem
+# Rechner sperrt (GHSA-cmcp-h343-c4gj). Nach dem disable, damit es die Verweise nicht entfernt.
+systemctl enable lf-claude-ssh-sperre.service
 # Keine Wartezeit auf Netzwerk beim Booten
 systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service >/dev/null 2>&1 || true
 # Keine automatischen Updates im Live-System

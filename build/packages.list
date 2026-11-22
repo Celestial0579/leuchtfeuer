@@ -93,6 +93,8 @@ network-manager
 wpasupplicant
 wireless-regdb
 openssh-server
+# lf-claude erreicht sshd auf diesem Rechner nicht (lf-claude-ssh-sperre.service)
+nftables
 rsync
 rclone
 cifs-utils
