@@ -552,14 +552,16 @@ selftest_lauscht() {
 
 # selftest_ssh_lokal   lf-claude erreicht sshd auf diesem Rechner nicht (GHSA-cmcp-h343-c4gj), auch
 #   nicht als rescue mit dem Einmal-Passwort. Geprüft wird: lf-claude-ssh-sperre.service ist aktiv,
-#   ssh.service und ssh.socket brauchen ihn (Requires), und geladen ist genau die Regel aus
-#   lf-claude-ssh.nft. Dann je Ziel eine Verbindung von lf-claude auf Port 22: Sie scheitert und
-#   trifft die Regel, ihr Zähler steigt. Eine Verbindung von root auf 127.0.0.1:22 trifft sie nicht.
-#   Ziele sind 127.0.0.1 und 127.0.0.2, mit IPv6 auch ::1 und ::ffff:127.0.0.1, dazu je eine eigene
-#   Adresse der Karten (IPv4, IPv6), soweit es sie gibt. Es wird nur verbunden, nie angemeldet: Die
-#   Verbindung endet, ohne dass ein Byte gesendet wird.
+#   ssh.service und ssh.socket brauchen ihn (Requires), neben ihnen führt kein Weg zu sshd
+#   (tools_ssh_nebenwege: systemd-ssh-generator maskiert, kein /run/ssh-unix-local/socket, keine
+#   Einheit sshd-*.socket), und geladen ist genau die Regel aus lf-claude-ssh.nft. Dann je Ziel eine
+#   Verbindung von lf-claude auf Port 22: Sie scheitert und trifft die Regel, ihr Zähler steigt.
+#   Eine Verbindung von root auf 127.0.0.1:22 trifft sie nicht. Ziele sind 127.0.0.1 und 127.0.0.2,
+#   mit IPv6 auch ::1 und ::ffff:127.0.0.1, dazu je eine eigene Adresse der Karten (IPv4, IPv6
+#   global, IPv6 link-local mit %Karte), soweit es sie gibt. Es wird nur verbunden, nie angemeldet:
+#   Die Verbindung endet, ohne dass ein Byte gesendet wird.
 selftest_ssh_lokal() {
-	local u uid a vor nach good=1
+	local u uid a weg vor nach good=1
 	local -a ziele=(127.0.0.1 127.0.0.2)
 	if ! systemctl is-active --quiet lf-claude-ssh-sperre.service; then
 		echo "LF-SELFTEST: SSH lokal: lf-claude-ssh-sperre.service ist nicht aktiv"
@@ -571,6 +573,11 @@ selftest_ssh_lokal() {
 			good=0
 		fi
 	done
+	weg=$(tools_ssh_nebenwege)
+	if [[ -n $weg ]]; then
+		sed 's/^/LF-SELFTEST: SSH lokal: Weg zu sshd an der Regel vorbei: /' <<<"$weg"
+		good=0
+	fi
 	if ! uid=$(id -u lf-claude 2>/dev/null) || ! selftest_ssh_lokal_regel "$uid"; then
 		echo "LF-SELFTEST: SSH lokal: die Regel aus lf-claude-ssh.nft ist nicht geladen (nft list table inet lf_claude_ssh)"
 		return 1
@@ -579,6 +586,8 @@ selftest_ssh_lokal() {
 	a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
 	[[ -n $a ]] && ziele+=("$a")
 	a=$(ip -6 -o addr show scope global -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+	[[ -n $a ]] && ziele+=("$a")
+	a=$(ip -6 -o addr show scope link -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); sub(/@.*/, "", $2); print $4 "%" $2; exit}')
 	[[ -n $a ]] && ziele+=("$a")
 	for a in "${ziele[@]}"; do
 		vor=$(selftest_ssh_lokal_treffer)
@@ -604,21 +613,9 @@ selftest_ssh_lokal() {
 }
 
 # selftest_ssh_lokal_regel UID   In der Tabelle inet lf_claude_ssh steht genau, was lf-claude-ssh.nft
-#   lädt: die Kette ausgang am Ausgang (filter, Priorität 0, policy accept), darin nur die Regel
-#   lf-claude-ssh: skuid UID, TCP-Port 22, Ziel eine eigene Adresse, Zähler, Abweisen mit TCP-Reset.
+#   lädt (tools_ssh_regel).
 selftest_ssh_lokal_regel() {
-	nft -j list table inet lf_claude_ssh 2>/dev/null | jq -e --argjson uid "$1" '
-		[.nftables[] | .chain? // empty] as $k | [.nftables[] | .rule? // empty] as $r |
-		($k | length) == 1 and ($r | length) == 1 and
-		($k[0] | .family == "inet" and .name == "ausgang" and .type == "filter" and .hook == "output" and .prio == 0 and .policy == "accept") and
-		($r[0] | .chain == "ausgang" and .comment == "lf-claude-ssh") and
-		($r[0].expr | map(if .counter then "counter" elif .match.left.fib then .match.left.fib.flags |= ([.] | flatten) else . end)) == [
-			{match: {op: "==", left: {meta: {key: "skuid"}}, right: $uid}},
-			{match: {op: "==", left: {payload: {protocol: "tcp", field: "dport"}}, right: 22}},
-			{match: {op: "==", left: {fib: {result: "type", flags: ["daddr"]}}, right: "local"}},
-			"counter",
-			{reject: {type: "tcp reset"}}
-		]' >/dev/null
+	nft -j list table inet lf_claude_ssh 2>/dev/null | tools_ssh_regel "$1"
 }
 
 # selftest_ssh_lokal_treffer   Wie viele Pakete die Regel lf-claude-ssh bisher abgewiesen hat.

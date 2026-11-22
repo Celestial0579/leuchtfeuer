@@ -73,6 +73,9 @@ tools_ssh() {
 	run sudo ssh-keygen -A || { ui_msg "SSH" "Die SSH-Hostschlüssel ließen sich nicht erzeugen. SSH bleibt aus."; return 0; }
 	fps=$(tools_ssh_fingerprints)
 	[[ -n $fps ]] || { ui_msg "SSH" "Die SSH-Hostschlüssel fehlen. SSH bleibt aus."; return 0; }
+	# Erst die Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt, frisch geladen und
+	# geprüft, dann das Passwort (GHSA-cmcp-h343-c4gj).
+	tools_ssh_sperre || return 0
 	pw=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' </dev/urandom | head -c 12)
 	echo "$(id -un):$pw" | sudo chpasswd
 	# ssh startet nur mit der Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt
@@ -95,6 +98,76 @@ tools_ssh_fingerprints() {
 		[[ -r $k ]] || continue
 		ssh-keygen -l -E sha256 -f "$k" 2>/dev/null | awk '$2 ~ /^SHA256:/ {print "   " $2 " " $NF}'
 	done
+}
+
+# tools_ssh_sperre   Vor dem Einschalten (GHSA-cmcp-h343-c4gj): lädt die Regel aus lf-claude-ssh.nft
+#   neu (lf-claude-ssh-sperre.service) und prüft, dass genau sie geladen ist und neben ssh.service
+#   kein Weg zu sshd führt. Sonst sagt es das und gibt 1 zurück: SSH bleibt aus, ein Einmal-Passwort
+#   gibt es nicht.
+tools_ssh_sperre() {
+	local uid weg
+	if ! run sudo systemctl restart lf-claude-ssh-sperre.service; then
+		log "SSH bleibt aus: lf-claude-ssh-sperre.service ließ sich nicht starten"
+		ui_msg "SSH" "Die Regel, die Claude den Weg zu SSH auf diesem Rechner sperrt, ließ sich nicht laden. SSH bleibt aus.\n\nDetails: journalctl -u lf-claude-ssh-sperre"
+		return 1
+	fi
+	if ! uid=$(id -u lf-claude 2>/dev/null) || ! sudo nft -j list table inet lf_claude_ssh 2>/dev/null | tools_ssh_regel "$uid"; then
+		log "SSH bleibt aus: geladen ist nicht die Regel aus lf-claude-ssh.nft"
+		ui_msg "SSH" "Geladen ist nicht genau die Regel aus lf-claude-ssh.nft, die Claude den Weg zu SSH auf diesem Rechner sperrt. SSH bleibt aus.\n\nDetails: sudo nft list table inet lf_claude_ssh"
+		return 1
+	fi
+	weg=$(tools_ssh_nebenwege)
+	if [[ -n $weg ]]; then
+		log "SSH bleibt aus: Wege zu sshd neben ssh.service: ${weg//$'\n'/, }"
+		ui_msg "SSH" "Neben ssh.service führt ein Weg zu sshd, an der Regel vorbei:\n\n${weg//$'\n'/\\n}\n\nSSH bleibt aus."
+		return 1
+	fi
+	return 0
+}
+
+# tools_ssh_regel UID   Liest nft -j list table inet lf_claude_ssh von der Eingabe: Darin steht
+#   genau, was lf-claude-ssh.nft lädt, die Kette ausgang am Ausgang (filter, Priorität 0, policy
+#   accept), darin nur die Regel lf-claude-ssh: skuid UID, TCP-Port 22, Ziel eine eigene Adresse,
+#   Zähler, Abweisen mit TCP-Reset. Für den Assistenten und den Selbsttest (selftest_ssh_lokal).
+tools_ssh_regel() {
+	jq -e --argjson uid "$1" '
+		[.nftables[] | .chain? // empty] as $k | [.nftables[] | .rule? // empty] as $r |
+		($k | length) == 1 and ($r | length) == 1 and
+		($k[0] | .family == "inet" and .name == "ausgang" and .type == "filter" and .hook == "output" and .prio == 0 and .policy == "accept") and
+		($r[0] | .chain == "ausgang" and .comment == "lf-claude-ssh") and
+		($r[0].expr | map(if .counter then "counter" elif .match.left.fib then .match.left.fib.flags |= ([.] | flatten) else . end)) == [
+			{match: {op: "==", left: {meta: {key: "skuid"}}, right: $uid}},
+			{match: {op: "==", left: {payload: {protocol: "tcp", field: "dport"}}, right: 22}},
+			{match: {op: "==", left: {fib: {result: "type", flags: ["daddr"]}}, right: "local"}},
+			"counter",
+			{reject: {type: "tcp reset"}}
+		]' >/dev/null
+}
+
+# tools_ssh_nebenwege   Wege zu sshd neben ssh.service und ssh.socket, je Zeile einer, leer, wenn es
+#   keine gibt (GHSA-cmcp-h343-c4gj). systemd-ssh-generator bindet sshd sonst bei jedem Start an den
+#   AF_UNIX-Socket /run/ssh-unix-local/socket (Modus 0666), in einer VM mit /dev/vsock auch an
+#   vsock-Port 22, beides unabhängig vom Menü und an der Regel vorbei, die nur TCP sieht.
+#   chroot-setup.sh maskiert ihn. Geprüft werden die Maske, der Socket und jede Einheit
+#   sshd-*.socket, geladen oder als Datei. LF_SSH_GENERATOR und LF_SSH_UNIX_SOCKET nennen für Tests
+#   andere Pfade.
+tools_ssh_nebenwege() {
+	local g=${LF_SSH_GENERATOR:-/etc/systemd/system-generators/systemd-ssh-generator}
+	local s=${LF_SSH_UNIX_SOCKET:-/run/ssh-unix-local/socket} geladen dateien
+	[[ -L $g && $(readlink "$g") == /dev/null ]] || echo "systemd-ssh-generator ist nicht maskiert ($g)"
+	[[ -e $s || -L $s ]] && echo "Socket $s"
+	# list-unit-files endet mit 1, wenn keine Datei passt. Ob systemctl antwortet, zeigt list-units.
+	if ! geladen=$(systemctl list-units --all --plain --no-legend 'sshd-*.socket' 2>/dev/null); then
+		echo "systemctl nennt die Einheiten sshd-*.socket nicht"
+		return 0
+	fi
+	dateien=$(systemctl list-unit-files --no-legend 'sshd-*.socket' 2>/dev/null)
+	# Je Zeile die erste Spalte mit dem Namen der Einheit, ohne die, die es nicht gibt (not-found).
+	printf '%s\n%s\n' "$geladen" "$dateien" | awk '{
+		for (i = 1; i <= NF; i++) if ($i ~ /^sshd-.*\.socket$/) break
+		if (i <= NF && $(i + 1) != "not-found") print "Einheit " $i
+	}' | sort -u
+	return 0
 }
 
 tools_logs() {

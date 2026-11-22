@@ -36,6 +36,9 @@ sudo() {
 	esac
 	return 0
 }
+# Die Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt, und die Wege neben
+# ssh.service prüft unit-ssh-lokal.sh (GHSA-cmcp-h343-c4gj). Hier gelten sie als in Ordnung.
+tools_ssh_sperre() { return 0; }
 
 fails=0
 check() {
