@@ -9,9 +9,11 @@
 #   - der Speicher ist nur die Partition LF-DATA auf diesem Stick,
 #   - tragen dort mehrere Partitionen den Namen, wird keine verwendet und keine weitere angelegt,
 #   - ein unverschlüsselter Speicher wird nie ohne Rückfrage eingebunden,
-#   - lf.conf wird als Daten gelesen: Nichts daraus wird ausgeführt.
+#   - lf.conf wird als Daten gelesen: Nichts daraus wird ausgeführt,
+#   - das Anlegen lässt das Boot-Flag im MBR des Sticks stehen (#106).
 # Ohne root und ohne Disks: lsblk, blkid, findmnt, sudo und die Dialoge sind Attrappen. lsblk
-# gibt JSON aus wie util-linux 2.41 auf der ISO.
+# gibt JSON aus wie util-linux 2.41 auf der ISO. Den MBR prüft am Ende das echte sgdisk an einem
+# kleinen ISO, das xorriso partitioniert wie make_iso.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
@@ -143,6 +145,29 @@ lsblk() {
 	[[ ,$cols, == *,NAME,* || ${LSBLK_BAUM:-} == 1 ]] && baum=true
 	geraete | jq -cs --arg cols "$cols" --arg dev "$dev" --argjson verschachtelt "$baum" "$LSBLK_JQ"
 }
+# Der MBR je Disk liegt in $T/mbr-NAME (512 Byte). sgdisk -e und -n schreiben den Schutz-MBR neu
+# wie sgdisk 1.0.10: Eintrag 2 (16 Byte ab Byte 462) wird leer. SGDISK_MBR2: stattdessen diese
+# 16 Byte (Hex). DD_OHNE_WIRKUNG=1: dd schreibt nichts.
+XORRISO_MBR2=80000100000001000000000001000000
+mbr_datei() { echo "$T/mbr-${1##*/}"; }
+mbr_setzen() { printf '%b' "$(sed 's/../\\x&/g' <<<"$2")" | command dd of="$(mbr_datei "$1")" bs=1 seek=462 count=16 conv=notrunc status=none; }
+mbr_leeren() { [[ ! -f $(mbr_datei "$1") ]] || mbr_setzen "$1" "${SGDISK_MBR2:-$PERSIST_MBR_LEER}"; }
+mbr_eintrag() { od -An -v -tx1 -j 462 -N 16 "$(mbr_datei "$1")" | tr -d ' \n'; }
+# mbr_neu DISK [EINTRAG]   Ein MBR wie von xorriso, Eintrag 2 = EINTRAG (Vorgabe: mit Boot-Flag).
+mbr_neu() {
+	head -c 512 /dev/zero >"$(mbr_datei "$1")"
+	mbr_setzen "$1" "${2:-$XORRISO_MBR2}"
+}
+# mbr_reihenfolge   Im Protokoll von sudo stehen sgdisk -e, dd auf Eintrag 2, sgdisk -n und wieder
+#   dd auf Eintrag 2, in dieser Reihenfolge, dd genau zweimal.
+mbr_reihenfolge() {
+	local e n
+	local -a dd_of
+	e=$(grep -n '^sgdisk -e ' "$T/sudo" | cut -d: -f1 | head -n1)
+	n=$(grep -n '^sgdisk -n ' "$T/sudo" | cut -d: -f1 | head -n1)
+	mapfile -t dd_of < <(grep -n '^dd of=/dev/sda ' "$T/sudo" | cut -d: -f1)
+	[[ ${#dd_of[@]} == 2 && -n $e && -n $n ]] && ((e < dd_of[0] && dd_of[0] < n && n < dd_of[1]))
+}
 sudo() {
 	local path disk partlabel label type
 	printf '%s\n' "$*" >>"$T/sudo"
@@ -153,6 +178,11 @@ sudo() {
 		done <<<"$PARTS"
 		;;
 	"cryptsetup open "*) : >"$PERSIST_MAPPER_DEV" ;;
+	"dd if=/dev/"*" bs=512 count=1 status=none") cat "$(mbr_datei "${2#if=}")" 2>/dev/null ;;
+	"dd of=/dev/"*" bs=1 seek=462 count=16 conv=notrunc,fsync status=none")
+		if [[ ${DD_OHNE_WIRKUNG:-0} == 1 ]]; then cat >/dev/null; else command dd of="$(mbr_datei "${2#of=}")" bs=1 seek=462 count=16 conv=notrunc status=none; fi
+		;;
+	"sgdisk -e "*) mbr_leeren "$3" ;;
 	"sgdisk -p "*) sgdisk_p "$3" ;;
 	"sgdisk -n "*) sgdisk_n "$@" || return ;;
 	"sgdisk -i "*) sgdisk_i "$3" "$4" ;;
@@ -184,6 +214,7 @@ sgdisk_n() {
 	((n <= 128)) && ! grep -q "^$(part_path "$disk" "$n") " <<<"$PARTS" || return 4
 	PARTS+=$'\n'"$(part_path "$disk" "$n") $disk $name - -"
 	[[ ${NEU_UNSICHTBAR:-0} == 1 ]] || BLOCKDEVS+=" $(part_path "$disk" "$n")"
+	mbr_leeren "$disk"
 }
 sgdisk_i() {
 	local p path disk partlabel label type
@@ -469,6 +500,7 @@ neu() {
 /dev/sda3 /dev/sda Gap1 - -"
 	for z in "$@"; do PARTS+=$'\n'"$z"; done
 	fresh
+	mbr_neu /dev/sda
 	PASSPHRASE="geheim-genug" YESNO_RC=0
 }
 persist_free_bytes() { echo $((4 * 1073741824)); }
@@ -479,6 +511,8 @@ rc=$?
 result
 check "frischer Stick: Partition 4 hinter der Lücke, mit fester Nummer angelegt" '[[ $SUDO == *"sgdisk -n 4:0:+2G -t 4:8300 -c 4:LF-DATA /dev/sda"* ]]'
 check "verschlüsselt und formatiert wird nur sie, dann eingebunden" '[[ $rc == 0 && $(formatiert) == "/dev/sda4 /dev/mapper/lf-data " && $BIND == bind ]]'
+check "das Boot-Flag im MBR steht danach wieder da (#106), nach sgdisk -e und nach sgdisk -n zurückgeschrieben" '[[ $(mbr_eintrag /dev/sda) == "$XORRISO_MBR2" ]] && mbr_reihenfolge'
+check "ohne Hinweis zum Boot-Flag, mit Zeile im Protokoll" '[[ $MSG != *Boot-Flag* ]] && grep -q "Boot-Flag im MBR von /dev/sda zurückgeschrieben" "$T/log"'
 neu
 YESNO_RC=1
 persist_create
@@ -522,7 +556,35 @@ neu
 PARTS=""
 for n in {1..128}; do PARTS+="/dev/sda$n /dev/sda P$n - -"$'\n'; done
 check "sind alle 128 Nummern belegt, gibt es keine" '! persist_free_number /dev/sda >/dev/null'
+
+# ---------------------------------------------------------------------------
+echo "Anlegen: das Boot-Flag im MBR des Sticks bleibt (#106):"
+neu
+mbr_neu /dev/sda "$PERSIST_MBR_LEER"
+persist_create
+rc=$?
+result
+check "trug Eintrag 2 vorher kein Boot-Flag, schreibt das Anlegen keins hinein" '[[ $rc == 0 && $(mbr_eintrag /dev/sda) == "$PERSIST_MBR_LEER" && $SUDO != *"dd of="* && $MSG != *Boot-Flag* ]]'
+neu
+SGDISK_MBR2=00fe0100000001000000000001000000
+persist_create
+rc=$?
+result
+check "steht nach sgdisk etwas anderes in Eintrag 2, bleibt es, mit einem Hinweis" '[[ $rc == 0 && $(mbr_eintrag /dev/sda) == "$SGDISK_MBR2" && $SUDO != *"dd of="* && $(grep -c "Boot-Flag im MBR des Sticks" <<<"$MSG") == 1 ]] && grep -q "ist nicht leer (00fe" "$T/log"'
+unset SGDISK_MBR2
+neu
+DD_OHNE_WIRKUNG=1
+persist_create
+rc=$?
+result
+check "wirkt das Zurückschreiben nicht, sagt der Assistent das einmal, der Speicher entsteht trotzdem" '[[ $rc == 0 && $(mbr_eintrag /dev/sda) == "$PERSIST_MBR_LEER" && $(grep -c "Boot-Flag im MBR des Sticks" <<<"$MSG") == 1 && $(formatiert) == "/dev/sda4 /dev/mapper/lf-data " ]]'
+unset DD_OHNE_WIRKUNG
+neu
 persist_free_bytes() { echo 0; }
+persist_create
+rc=$?
+result
+check "bricht das Anlegen nach sgdisk -e ab (zu wenig Platz), steht das Boot-Flag trotzdem wieder da" '[[ $rc != 0 && $MSG == *"zu wenig freier Platz"* && $(mbr_eintrag /dev/sda) == "$XORRISO_MBR2" ]]'
 
 # ---------------------------------------------------------------------------
 echo "lf.conf wird gelesen, nicht ausgeführt:"
@@ -610,6 +672,35 @@ fresh
 unset LF_TARGET_FS
 persist_bind
 check "eine Verknüpfung an Stelle der frs.conf wird nicht übernommen" '[[ -z ${LF_TARGET_FS:-} ]] && ! grep -q FRS_ "$PERSIST_CONFIG"'
+
+# ---------------------------------------------------------------------------
+echo "Boot-Flag im MBR mit dem echten sgdisk (#106):"
+if command -v sgdisk >/dev/null && command -v xorriso >/dev/null; then
+	# Ein kleines ISO, partitioniert wie make_iso in build/build.sh (ohne Bootloader), auf 64 MiB
+	# vergrößert wie ein Stick.
+	img=$T/stick.img
+	mkdir -p "$T/iso"
+	echo x >"$T/iso/x"
+	head -c 1048576 /dev/zero >"$T/efi.img"
+	xorriso -as mkisofs -quiet -V LEUCHTFEUER -o "$img" -partition_offset 16 --mbr-force-bootable \
+		-append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b "$T/efi.img" -appended_part_as_gpt "$T/iso" >/dev/null 2>&1
+	truncate -s 64M "$img"
+	sudo() { "$@"; }
+	mbr=$(persist_mbr_merken "$img")
+	check "xorriso legt Eintrag 2 mit dem Boot-Flag an" '[[ $mbr == "$XORRISO_MBR2" ]]'
+	command sgdisk -e "$img" >/dev/null 2>&1
+	check "sgdisk -e leert Eintrag 2: So ging das Boot-Flag verloren" '[[ $(persist_mbr_eintrag "$img") == "$PERSIST_MBR_LEER" ]]'
+	persist_mbr_zurueck "$img" "$mbr"
+	check "persist_mbr_zurueck schreibt ihn zurück" '[[ $(persist_mbr_eintrag "$img") == "$mbr" ]]'
+	command sgdisk -n 4:0:+8M -t 4:8300 -c 4:LF-DATA "$img" >/dev/null 2>&1
+	check "sgdisk -n leert ihn wieder" '[[ $(persist_mbr_eintrag "$img") == "$PERSIST_MBR_LEER" ]]'
+	persist_mbr_zurueck "$img" "$mbr"
+	check "danach steht er wieder da, die GPT ist gültig, LF-DATA ist Partition 4" '[[ $(persist_mbr_eintrag "$img") == "$mbr" ]] && command sgdisk -v "$img" 2>&1 | grep -q "No problems found" && command sgdisk -i 4 "$img" | grep -qx "Partition name: '"'"'LF-DATA'"'"'"'
+	check "Eintrag 1 bleibt der Schutz-Eintrag (Typ EE)" '[[ $(od -An -tx1 -j 450 -N 1 "$img" | tr -d " ") == ee ]]'
+	unset -f sudo
+else
+	echo "  übersprungen: sgdisk oder xorriso fehlt"
+fi
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
