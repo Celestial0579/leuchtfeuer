@@ -19,6 +19,8 @@ CLAUDE_XDG=${LF_RUN:-/run/lf}/claude-xdg
 # behält sie, auch wenn er sich abkoppelt. Am Ende einer Freigabe beendet lf-freigabe darin jeden
 # root-Prozess.
 CLAUDE_SLICE=lf-claude.slice
+# Der Rückstand nach einer Freigabe (RESIDUE in lf-freigabe).
+CLAUDE_FREIGABE_RUECKSTAND=/run/lf/claude-freigabe-rueckstand
 
 # claude_wayland_dir   Verzeichnis für den Socket von cage: gehört dem Live-Benutzer, Gruppe
 #   $CLAUDE_USER, setgid. Der Socket darin bekommt die Gruppe von selbst.
@@ -44,6 +46,35 @@ claude_freigabe_hinweis() {
 	elif [[ $s == "aus, "* ]]; then
 		echo "Hinweis: Claude hatte volles sudo, ${s#aus, }"
 	fi
+	return 0
+}
+
+# claude_freigabe_ohne_timer [ui]   Beim Start von lf (Menü und Selbsttest, #84): Gilt noch die
+#   Regel einer Freigabe, aber kein Timer beendet sie ("an, ohne Ablauf"), endet sie wie beim
+#   Ablauf, mit Prüfung des Rückstands (lf-freigabe ablauf). Beim Freischalten und Verlängern liegt
+#   zwischen Regel und Timer ein kurzer Moment: Darum gilt es erst, wenn status nach
+#   LF_FREIGABE_WARTE Sekunden (Vorgabe 5) noch dasselbe sagt. Mit "ui" steht solange ein Hinweis
+#   auf dem Bildschirm. Gibt nach dem Ende status aus und endet mit 0, sonst mit 1.
+claude_freigabe_ohne_timer() {
+	local s
+	s=$(lf-freigabe status 2>/dev/null)
+	[[ $s == "an, ohne Ablauf" ]] || return 1
+	[[ ${1:-} == ui ]] && ui_info "Claude-Freigabe" "Eine Claude-Freigabe gilt noch, ohne Timer, der sie beendet. Sie endet gleich wie nach Ablauf der Zeit …"
+	sleep "${LF_FREIGABE_WARTE:-5}"
+	s=$(lf-freigabe status 2>/dev/null)
+	[[ $s == "an, ohne Ablauf" ]] || return 1
+	log "Claude-Freigabe ohne Timer beim Start (an, ohne Ablauf): endet wie beim Ablauf"
+	run sudo lf-freigabe ablauf
+	lf-freigabe status 2>/dev/null
+	return 0
+}
+
+# claude_freigabe_netzschalter   Die Zeilen im Rückstand der letzten Freigabe, die sagen, am
+#   Netzschalter auszuschalten (#84): "Sofort ausschalten", "Vor dem Weiterarbeiten ausschalten:
+#   Netzschalter gedrückt halten" und die eines abgebrochenen Endes. Höchstens 5, gefiltert.
+claude_freigabe_netzschalter() {
+	[[ -f $CLAUDE_FREIGABE_RUECKSTAND ]] || return 0
+	grep -aF "Netzschalter gedrückt halten" "$CLAUDE_FREIGABE_RUECKSTAND" 2>/dev/null | head -n 5 | text_clean 400
 	return 0
 }
 

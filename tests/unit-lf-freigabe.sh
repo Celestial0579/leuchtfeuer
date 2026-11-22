@@ -52,6 +52,8 @@
 #     zuerst der Hinweis aufs Ausschalten (A1 bis A3, B2 bis B4, B6, B7).
 #   - Nach jeder Freigabe sagt status bis zum Neustart "aus, Neustart empfohlen (…)" (F15). Der
 #     Assistent startet ohne kexec und soft-reboot neu, die Anleitung rät zum Ausschalten.
+#   - Gilt beim Start von lf die Regel ohne Timer ("an, ohne Ablauf") und nach 5 s noch immer, endet
+#     die Freigabe wie beim Ablauf (claude_freigabe_ohne_timer in claude.sh, #84).
 #   - Vom ersten Schritt jedes Endes an hält lf-netzschalter.service (Unit-Datei aus dem Image) bei
 #     logind die Sperre des Netzschalters; das Ende lässt den Dienst nur mit genau dieser Datei stehen,
 #     prüft nach dem Beenden über ListInhibitors, ob logind sie führt, startet ihn neu, wenn sein
@@ -739,6 +741,53 @@ check "beendet, was lf-claude mit der Freigabe gestartet hat, auch ohne SUDO_USE
 check "Prozesse des Technikers und setuid-Programme ohne sudo laufen weiter" 'kill -0 "$P3" 2>/dev/null && kill -0 "$P5" 2>/dev/null'
 check "nur Umgebung und Befehlszeile wie ein Job von lf-aufgabe: beendet (B5)" '! kill -0 "$P2" 2>/dev/null && grep -q "beendet: $P2" "$LOG"'
 kill "$P2" "$P3" "$P5" "$P1" "$P4" "$P6" 2>/dev/null
+cleanproc
+
+echo "Start von lf mit einer Regel ohne Timer (#84):"
+# lf_start [ui]   claude_freigabe_ohne_timer aus claude.sh wie beim Start von lf: lf-freigabe ist die
+#   Kopie oben, sudo führt nur aus, sleep und ui_info schreiben mit. Steht in TIMER_NACH_WARTEN ein
+#   Timer, gibt es ihn nach dem Warten (das Freischalten war noch nicht fertig). Ausgabe in
+#   $T/start.status, Aufrufe in $T/start.log.
+lf_start() {
+	: >"$T/start.log"
+	(
+		eval "$(sed -n '/^claude_freigabe_ohne_timer() {$/,/^}$/p' rescue/lib/claude.sh)"
+		lf-freigabe() { bash "$F" "$@"; }
+		sudo() { echo "sudo $*" >>"$T/start.log"; "$@"; }
+		run() { "$@" >>"$T/start.out" 2>&1; }
+		log() { echo "log $*" >>"$T/start.log"; }
+		ui_info() { echo "ui_info $1" >>"$T/start.log"; }
+		sleep() {
+			echo "sleep $*" >>"$T/start.log"
+			[[ -z ${TIMER_NACH_WARTEN:-} ]] || printf '%s\n' "$TIMER_NACH_WARTEN" >"$T/timers.json"
+		}
+		claude_freigabe_ohne_timer "$@"
+	) >"$T/start.status"
+}
+TIMER="[{\"next\": $(((NOW + 600) * 1000000)), \"unit\": \"lf-claude-freigabe-ende.timer\"}]"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+check "frei, aber kein Timer: an, ohne Ablauf" '[[ -e $RULE && $(bash "$F" status) == "an, ohne Ablauf" ]]'
+lf_start ui
+RC=$?
+check "beim Start: nach 5 s noch so, dann endet sie wie beim Ablauf, mit Hinweis auf dem Bildschirm" '((RC == 0)) && [[ $(grep -v "^log " "$T/start.log" | tr "\n" "|") == "ui_info Claude-Freigabe|sleep 5|sudo lf-freigabe ablauf|" && ! -e $RULE ]] && tail -n 1 "$LOG" | grep -q "abgelaufen"'
+check "danach: aus, Neustart empfohlen, das gibt sie auch aus" 'aus_n && [[ $(cat "$T/start.status") == "aus, Neustart empfohlen (letzte Freigabe bis "* ]]'
+lf_start
+RC=$?
+check "ohne Freigabe: nichts, kein Warten" '((RC == 1)) && [[ ! -s $T/start.log && ! -s $T/start.status ]]'
+bash "$F" an 30 >"$T/out" 2>&1
+printf '%s\n' "$TIMER" >"$T/timers.json"
+lf_start ui
+RC=$?
+check "mit Timer: nichts, die Freigabe gilt weiter" '((RC == 1)) && [[ ! -s $T/start.log && -e $RULE ]]'
+rm -f "$T/timers.json"
+TIMER_NACH_WARTEN=$TIMER lf_start
+RC=$?
+check "kommt der Timer während des Wartens: nichts, die Freigabe gilt weiter" '((RC == 1)) && [[ $(cat "$T/start.log") == "sleep 5" && -e $RULE ]]'
+rm -f "$T/timers.json"
+bash "$F" aus >"$T/out" 2>&1
+check "danach wieder aus, Neustart empfohlen" 'aus_n'
 cleanproc
 
 echo "aus, cgroup von Claude:"
