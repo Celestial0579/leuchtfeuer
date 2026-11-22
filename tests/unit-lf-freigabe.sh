@@ -56,7 +56,8 @@
 #     die Freigabe wie beim Ablauf (claude_freigabe_ohne_timer in claude.sh, #84).
 #   - Hat sich während der Freigabe unter /run/lf/ssh etwas geändert (die Schlüssel von LF-SSH), ist
 #     das ein Rückstand, und bis zum Neustart gilt von dort kein Schlüssel mehr, auch keiner von
-#     vorher. Gelöscht wird nichts. Den Stand des Journals, den Werkzeuge > SSH dort merkt, zählt das
+#     vorher und keiner, den eine Einheit aus der Freigabe dort noch schreibt, bevor das Ende sie
+#     beendet. Gelöscht wird nichts. Den Stand des Journals, den Werkzeuge > SSH dort merkt, zählt das
 #     Ende nicht (#99).
 #   - Vom ersten Schritt jedes Endes an hält lf-netzschalter.service (Unit-Datei aus dem Image) bei
 #     logind die Sperre des Netzschalters; das Ende lässt den Dienst nur mit genau dieser Datei stehen,
@@ -323,9 +324,11 @@ show)
 # Sockets, Pfade und Automounts lassen sich nicht anhalten, eine Einheit mit der Datei
 # nicht-anhaltbar-NAME auch nicht. Mit der Datei abbruch-bei-NAME bricht das Ende ab (KILL an den
 # Aufrufer), wenn es NAME anhalten will. Mit der Datei sperre-zurueck-bei-NAME hat NAME die gesperrte
-# Grundregel zurückgeschoben, bevor das Ende sie anhält.
+# Grundregel zurückgeschoben, bevor das Ende sie anhält, mit der Datei schluessel-bei-NAME einen
+# Schlüssel (Platzhalter) nach authorized_keys unter /run/lf/ssh geschrieben.
 freeze)
 	[[ -e "$T/abbruch-bei-\$u" ]] && { kill -KILL "\$PPID"; exit 1; }
+	[[ -e "$T/schluessel-bei-\$u" ]] && echo "restrict,pty ssh-ed25519 PLATZHALTER-spaet spaet@probe" >>"$T/run/ssh/authorized_keys"
 	if [[ -e "$T/sperre-zurueck-bei-\$u" && -f "$T/sudoers.d/lf-claude.lf-gesperrt" ]]; then
 		mv "$T/sudoers.d/lf-claude.lf-gesperrt" "$T/sudoers.d/lf-claude"
 		# Mit der Datei sperre-fest-bei-NAME lässt sie sich danach nicht mehr verschieben (mv-fest).
@@ -1352,6 +1355,38 @@ echo "restrict,pty ssh-ed25519 PLATZHALTER-neu neu@probe" >>"$SK/authorized_keys
 echo "kaputt" >"$SK/journal-cursor"
 bash "$F" aus >"$T/out" 2>&1
 check "ein Stand des Journals, der keiner ist, kommt nach dem Sperren nicht zurück" '[[ $(cat "$SK/status") == freigabe && ! -e $SK/journal-cursor ]] && grep -qxF "kaputt" "$SK".lf-gesperrt.*/ssh/journal-cursor'
+reboot_sim
+# Eine Einheit aus der Freigabe außerhalb der cgroup von Claude schreibt noch einen Schlüssel nach
+# authorized_keys, bevor das Ende sie anhält, also nach dem ersten Sperren (nur in der Attrappe von
+# systemctl, Datei schluessel-bei-NAME).
+: >"$LOG"
+: >"$T/systemctl.log"
+ssh_keys_setup
+bash "$F" an 30 >"$T/out" 2>&1
+echo "restrict,pty ssh-ed25519 PLATZHALTER-neu neu@probe" >>"$SK/authorized_keys"
+unit ssh-spaet.service no /system.slice/ssh-spaet.service
+touch "$T/schluessel-bei-ssh-spaet.service"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/schluessel-bei-ssh-spaet.service"
+g=("$SK".lf-gesperrt.*/ssh)
+check "ein Schlüssel, den eine Einheit aus der Freigabe nach dem ersten Sperren noch schreibt: Nach dem Beenden sperrt das Ende noch einmal, danach gilt keiner" 'grep -qxF "freeze ssh-spaet.service" "$T/systemctl.log" && [[ $(grep -cF "gesperrt: SSH-Schlüssel unter $SK (jetzt " "$LOG") == 2 && ! -s $SK/authorized_keys && ! -s $SK/kandidaten && $(cat "$SK/status") == freigabe ]]'
+check "gelöscht wird auch dabei nichts: beide Ordner liegen daneben, einer mit dem Schlüssel von danach; der Stand des Journals bleibt, der Rückstand auch" '((${#g[@]} == 2)) && [[ $(cat "${g[0]}/authorized_keys" "${g[1]}/authorized_keys" | grep -cxF "restrict,pty ssh-ed25519 PLATZHALTER-spaet spaet@probe") == 1 && $(cat "$SK/journal-cursor") == s=1 ]] && grep -qxF "Datei geändert: $SK/authorized_keys" "$R"'
+reboot_sim
+# Eine Rettung, die das Ende zuerst stehen lässt, beendet es erst in der zweiten Runde (ein Rückstand,
+# nach dem die Grundregel bis zum Neustart gesperrt bleibt). Was sie bis dahin unter /run/lf/ssh
+# schreibt, sperrt das Ende danach.
+: >"$LOG"
+: >"$T/systemctl.log"
+ssh_keys_setup
+bash "$F" an 30 >"$T/out" 2>&1
+RU6=$(runit /mnt/lf-target/LF/ok-ssh)
+rescue "$RU6" /mnt/lf-target/LF/ok-ssh /dev/sdb
+echo x >"$W/usr/lib/x86_64-linux-gnu/security/pam_ssh.so"
+touch "$T/schluessel-bei-$RU6"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/schluessel-bei-$RU6" "$W/usr/lib/x86_64-linux-gnu/security/pam_ssh.so"
+g=("$SK".lf-gesperrt.*/ssh)
+check "…auch nach der zweiten Runde des Beendens (eine Rettung, die das Ende zuerst stehen ließ)" 'a=$(grep -nF "Ende der Freigabe: beendet, prüfe Rückstand" "$LOG" | cut -d: -f1) && b=$(grep -nF "gesperrt: SSH-Schlüssel unter $SK (jetzt " "$LOG" | cut -d: -f1) && ((${#g[@]} == 1 && b > a)) && grep -qxF "freeze $RU6" "$T/systemctl.log" && grep -qxF "Systemdatei neu oder geändert: $W/usr/lib/x86_64-linux-gnu/security/pam_ssh.so" "$R" && [[ ! -s $SK/authorized_keys && $(cat "$SK/status") == freigabe ]] && grep -qxF "restrict,pty ssh-ed25519 PLATZHALTER-spaet spaet@probe" "${g[0]}/authorized_keys"'
 reboot_sim
 
 echo "Kette über Verknüpfungen, hängende Prüfungen (F14):"

@@ -1618,8 +1618,9 @@ ssh_keys_changed() {
 		awk -v d="$SSH_DIR" '{p = $0; sub(/^[^:]*: /, "", p)} p == d || index(p, d "/") == 1 {f = 1} END {exit !f}'
 }
 
-# ssh_keys_none   Hat ein früheres Ende die Schlüssel unter SSH_DIR gesperrt, und gilt seitdem keiner:
-#   Zustand "freigabe", authorized_keys und kandidaten leer, alles echte Dateien, keine Einhängung?
+# ssh_keys_none   Sind die Schlüssel unter SSH_DIR schon gesperrt (disable_ssh_keys, auch in diesem
+#   Ende), und gilt seitdem keiner: Zustand "freigabe", authorized_keys und kandidaten leer, alles
+#   echte Dateien, keine Einhängung?
 ssh_keys_none() {
 	local f st=""
 	[[ -d $SSH_DIR && ! -L $SSH_DIR && -f $SSH_DIR/status && ! -L $SSH_DIR/status ]] || return 1
@@ -1640,9 +1641,10 @@ ssh_keys_none() {
 #   SSH_DIR da wie nach dem Laden ohne Schlüssel, mit dem Zustand "freigabe" für tty1 und Werkzeuge >
 #   SSH (sshkeys_status_text). Nur der Stand des Journals kommt zurück, wenn er wie einer aussieht:
 #   Einen kaputten nähme journalctl nicht, und das Hauptmenü übernähme bis zum Neustart keine
-#   Anmeldung per SSH mehr ins Protokoll. Gelöscht wird nichts, residue
-#   meldet es bis zum Neustart (files_changed). Hat ein früheres Ende sie schon gesperrt und gilt
-#   seitdem keiner (ssh_keys_none), bleibt es dabei.
+#   Anmeldung per SSH mehr ins Protokoll. Gelöscht wird nichts, residue meldet es bis zum Neustart
+#   (files_changed). off ruft es vor dem Beenden auf und nach jeder Runde des Beendens noch einmal:
+#   Was aus der Freigabe bis dahin noch lief, kann dort noch etwas geändert haben. Sind sie schon
+#   gesperrt und gilt seitdem keiner (ssh_keys_none), bleibt es dabei.
 disable_ssh_keys() {
 	local t="" old c="" re='^[a-z]=[0-9a-f]+(;[a-z]=[0-9a-f]+)*$'
 	ssh_keys_changed || return 0
@@ -2989,7 +2991,7 @@ off() {
 	# Was jedes Programm lädt und was die Grundregel ausführt, vor allem anderen: Danach läuft keine
 	# Bibliothek aus ld.so.preload mehr mit und kein geändertes lf-aufgabe. Dann, wohin ein Neustart
 	# statt neu zu starten springen könnte. Dann die Schlüssel von LF-SSH, falls sich dort etwas
-	# geändert hat.
+	# geändert hat (nach dem Beenden noch einmal).
 	disable_preload
 	check_chain
 	disable_nextroot
@@ -3004,6 +3006,8 @@ off() {
 	stop_granted
 	# Was beim Beenden noch gestartet ist (etwa über OnSuccess= einer beendeten Einheit).
 	stop_new_units
+	# Was aus der Freigabe bis hierher noch lief, kann unter SSH_DIR noch etwas geändert haben.
+	disable_ssh_keys
 	menv_restore
 	if [[ -e $LINGER/$CLAUDE ]]; then loginctl disable-linger "$CLAUDE" 2>/dev/null || true; fi
 	# Hält logind die Sperre des Netzschalters noch (nach dem Beenden, vor der Prüfung des Rückstands:
@@ -3014,8 +3018,9 @@ off() {
 	# der Grundregel, das sich geändert haben kann. Gibt es eine Zeile aus lock_lines, bleibt die
 	# Grundregel bis zum Neustart gesperrt (die Meldung nennt jeden Grund, auch jede Einhängung), und
 	# ohne sie bleibt auch kein Dienst und kein Job der Grundregel stehen (kept_unit, kept_job): noch
-	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, dann neu prüfen. Sonst bleibt
-	# sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt, ohne ist sie wieder frei.
+	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, danach disable_ssh_keys, dann
+	# neu prüfen. Sonst bleibt sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt,
+	# ohne ist sie wieder frei.
 	r=$(end_residue)
 	l=$(lock_lines <<<"$r")
 	if [[ -n $l ]] && base_rule_file >/dev/null; then
@@ -3023,6 +3028,7 @@ off() {
 		stop_new_units
 		stop_root_in_claude
 		stop_granted
+		disable_ssh_keys
 		r=$(end_residue)
 	fi
 	# Mit Rückstand bleibt sie gesperrt. Hat etwas die Sperre aus dem ersten Schritt aufgehoben (etwa
