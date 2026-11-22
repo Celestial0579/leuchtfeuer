@@ -1486,7 +1486,7 @@ main_menu() {
 }
 
 power_menu() {
-	local c
+	local c netz what
 	c=$(ui_menu "Beenden" "" -- \
 		shell "Zur Shell (Assistent mit 'lf' wieder starten)" \
 		reboot "Neustart" \
@@ -1496,6 +1496,18 @@ power_menu() {
 	reboot | poweroff)
 		if tmux has-session -t lf-rettung 2>/dev/null; then
 			ui_yesno "Rettung läuft" "Eine Rettung läuft noch. Sie kann später fortgesetzt werden.\nTrotzdem $c?" --defaultno || return 1
+		fi
+		# Sagt der Rückstand der letzten Claude-Freigabe, am Netzschalter auszuschalten, zuerst diese
+		# Zeilen und der Rat dazu, dann nur nach einer Bestätigung (#84).
+		netz=$(claude_freigabe_netzschalter)
+		if [[ -n $netz ]]; then
+			what=Neustart
+			[[ $c == poweroff ]] && what=Ausschalten
+			if ! ui_yesno "Netzschalter" "Im Rückstand der letzten Claude-Freigabe steht:\n\n$netz\n\nHalte stattdessen den Netzschalter gedrückt, bis das Gerät aus ist. Beim $what über das Menü beendet systemd jeden Dienst, und Code aus der Freigabe liefe dabei.\n\nTrotzdem $what?" --defaultno; then
+				log "Beenden: $what abgebrochen, der Rückstand sagt, am Netzschalter auszuschalten"
+				return 1
+			fi
+			log "Beenden: $what trotz Hinweis aufs Ausschalten am Netzschalter"
 		fi
 		persist_close
 		sync
@@ -1521,6 +1533,10 @@ case ${1:-} in
 	LF_RUN=/run/lf
 	mkdir -p "$LF_RUN"
 	LF_LOG="$LF_RUN/selftest.log"
+	# Eine Freigabe ohne Timer endet vor dem Selbsttest (#84).
+	if freigabe_ende=$(claude_freigabe_ohne_timer); then
+		echo "LF-SELFTEST: Freigabe ohne Timer beim Start, beendet wie beim Ablauf ($freigabe_ende)"
+	fi
 	selftest
 	exit $?
 	;;
@@ -1535,6 +1551,10 @@ log_init
 ui_init
 banner
 log "Leuchtfeuer $LF_VERSION gestartet"
+# Eine Freigabe ohne Timer endet vor allem anderen, auch vor dem Entsperren von LF-DATA (#84).
+if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
+	ui_msg "Claude-Freigabe" "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $(text_clean 300 <<<"${freigabe_ende:-unbekannt}")\n\nSicher endet root-Zugriff nur mit einem Neustart."
+fi
 persist_startup
 ui_init
 claude_update_bg
