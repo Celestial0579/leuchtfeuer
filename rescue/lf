@@ -9,7 +9,7 @@ set -u
 
 LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
 [[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools; do
+for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools pam; do
 	# shellcheck disable=SC1090
 	. "$LF_LIB/$f.sh"
 done
@@ -1058,6 +1058,27 @@ selftest_claude_user() {
 	selftest_claude_freigabe || good=0
 	selftest_claude_wayland "$dir" || good=0
 	selftest_claude_skills || good=0
+	selftest_kein_su || good=0
+	((good))
+}
+
+# selftest_kein_su [WURZEL]   lf-claude wechselt mit su zu keinem anderen Benutzer
+#   (GHSA-j332-2v26-m4qm). Geprüft wird nur die Konfiguration, ohne su und ohne Anmeldung: Sie ist
+#   so, wie pam_pruefen es verlangt (kein leeres Passwort, kein nullok, su nur für root und die
+#   Gruppe sudo), und das Passwort des Live-Benutzers ist gesperrt, ab dem Start, bis SSH beim
+#   Einschalten ein Einmal-Passwort setzt. Die PAM-Dienste su und su-l nutzen beide su: das von
+#   util-linux und das von sudo-rs (/usr/lib/cargo/bin/su, nicht im PATH, aber setuid root).
+selftest_kein_su() {
+	local root=${1:-/} good=1 out
+	if ! out=$(pam_pruefen "$root"); then
+		sed 's/^/LF-SELFTEST: Anmeldung: /' <<<"$out"
+		good=0
+	fi
+	if ! out=$(pam_gesperrt "$root" rescue); then
+		echo "LF-SELFTEST: Anmeldung: $out"
+		good=0
+	fi
+	((good)) && echo "LF-SELFTEST: Anmeldung: kein leeres Passwort, kein nullok, su nur für root und die Gruppe sudo, Passwort von rescue gesperrt"
 	((good))
 }
 

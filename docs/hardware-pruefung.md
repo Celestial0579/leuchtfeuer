@@ -34,6 +34,7 @@ Notiere zu jedem Punkt die Version (`lf --version`), das Rechnermodell und das E
 | BIOS oder CSM | wie oben |
 | Eintrag „in den RAM laden“, Stick danach abziehen | Der Assistent und die Werkzeuge laufen weiter |
 | Sicherer Grafikmodus | Bild ohne Grafiktreiber |
+| Alt+F2 … F6 | Eine Shell als `rescue`, ohne Anmeldung. Mit Strg+D kommt sie neu, wieder ohne Anmeldung |
 
 Nach jedem Start in der Shell (Werkzeuge > Shell):
 

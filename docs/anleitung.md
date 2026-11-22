@@ -9,7 +9,7 @@ Start
    - **In den RAM laden:** Der Stick ist danach frei. Das ist praktisch, wenn er als Ziel für die Persistenz dient.
    - **Sicherer Grafikmodus:** bei schwarzem Bild.
    - **memtest86+:** nur mit abgeschaltetem Secure Boot.
-3. Der Assistent startet von selbst. Auf **Alt+F2 … F6** liegen normale Konsolen.
+3. Der Assistent startet von selbst. Auf **Alt+F2 … F6** liegen Konsolen, auf denen der Live-Benutzer `rescue` schon angemeldet ist. Am seriellen Port meldet sich niemand an: Das Passwort von `rescue` ist gesperrt, nur SSH setzt beim Einschalten ein Einmal-Passwort.
 
 Beim ersten Start mit freiem Platz auf dem Stick fragt der Assistent, ob er einen **persistenten Speicher** anlegen soll. Empfohlen sind 2 GiB mit Verschlüsselung. Dort liegen künftig Claude-Login, `~/.claude/CLAUDE.md`, `/etc/lf/lf.conf`, WLAN-Profile, SSH-Schlüssel und Protokolle. Bei jedem Start fragt der Assistent nach der Passphrase.
 
