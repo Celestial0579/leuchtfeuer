@@ -32,16 +32,21 @@ lfssh_image() {
 # lfssh_name ISO   xorriso nennt die angehängte Partition „Appended3“, ihr GPT-Eintrag soll LF-SSH
 #   heißen. sfdisk schreibt dabei auch den Schutz-MBR neu und löscht den Eintrag mit Boot-Flag, den
 #   --mbr-force-bootable für BIOS anlegt, die nur von einer Disk mit aktiver Partition starten
-#   (#106). Der erste Sektor bleibt deshalb, wie xorriso ihn geschrieben hat.
+#   (#106). Der erste Sektor bleibt deshalb, wie xorriso ihn geschrieben hat. Die Warnungen von
+#   sfdisk (Hybrid-MBR, Größe im Schutz-MBR) kommen nur, wenn es fehlschlägt, dann auf stderr.
 lfssh_name() {
-	local iso=$1 mbr rc=0
+	local iso=$1 mbr err rc=0
 	mbr=$(mktemp) || return 1
-	if ! dd if="$iso" of="$mbr" bs=512 count=1 status=none ||
-		! sfdisk --no-reread --no-tell-kernel --part-label "$iso" "$LFSSH_PART" "$LFSSH_LABEL" >/dev/null 2>&1 ||
-		! dd if="$mbr" of="$iso" bs=512 count=1 conv=notrunc status=none; then
+	err=$(mktemp) || { rm -f "$mbr"; return 1; }
+	if ! dd if="$iso" of="$mbr" bs=512 count=1 status=none; then
+		rc=1
+	elif ! sfdisk --no-reread --no-tell-kernel --part-label "$iso" "$LFSSH_PART" "$LFSSH_LABEL" >/dev/null 2>"$err"; then
+		cat "$err" >&2
+		rc=1
+	elif ! dd if="$mbr" of="$iso" bs=512 count=1 conv=notrunc status=none; then
 		rc=1
 	fi
-	rm -f "$mbr"
+	rm -f "$mbr" "$err"
 	return "$rc"
 }
 

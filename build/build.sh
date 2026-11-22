@@ -73,10 +73,16 @@ host_deps() {
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends \
-		debootstrap squashfs-tools xorriso mtools cpio dosfstools \
+		debootstrap squashfs-tools xorriso mtools cpio dosfstools fdisk \
 		grub-common fonts-dejavu-core tex-gyre python3 ca-certificates curl gnupg >/dev/null
 	# DejaVu Sans Mono liegt in neueren Releases im eigenen Paket
 	apt-get install -y -qq --no-install-recommends fonts-dejavu-mono >/dev/null 2>&1 || true
+	# Was make_iso für die Partition LF-SSH braucht (build/lf-ssh/partition.sh), gleich hier statt
+	# erst nach dem Bau: Im Container ubuntu:26.04 fehlt sfdisk ohne das Paket fdisk.
+	local c
+	for c in xorriso mkfs.vfat mcopy mdir sfdisk blkid cmp; do
+		command -v "$c" >/dev/null || die "Build-Werkzeug fehlt: $c"
+	done
 }
 
 # ---------------------------------------------------------------------------

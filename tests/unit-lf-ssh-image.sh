@@ -4,7 +4,9 @@
 # Baut ein kleines ISO mit denselben Angaben für Partitionen und Boot wie make_iso in build.sh, nur
 # ohne GRUB, Kernel und squashfs, benennt LF-SSH und prüft es wie build.sh. Der erste Sektor muss
 # danach derselbe sein, den xorriso geschrieben hat, mit dem Eintrag mit Boot-Flag für BIOS (#106).
-# Ohne xorriso, mtools, mkfs.vfat, sfdisk oder blkid wird das Probe-ISO übersprungen.
+# Schlägt das Benennen fehl, steht die Meldung von sfdisk auf stderr, auch wenn sfdisk fehlt wie im
+# Container ubuntu:26.04 ohne das Paket fdisk. host_deps installiert es und prüft die Werkzeuge vor
+# dem Bau. Ohne xorriso, mtools, mkfs.vfat, sfdisk oder blkid wird das Probe-ISO übersprungen.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -42,6 +44,8 @@ check "xorriso hängt es als Partition 3 an, nach der EFI-Partition, beide in de
 check "nach xorriso: erster Sektor gesichert, benannt, geprüft, dann erst die Prüfsumme" '[[ -n $l_mbr && -n $l_name && -n $l_check && -n $l_sum ]] && ((l_xorriso < l_mbr && l_mbr < l_name && l_name < l_check && l_check < l_sum))'
 check "ein Fehler bei Name oder Prüfung bricht den Build ab" 'sed -n "${l_name}p" "$B" | grep -q "|| die " && sed -n "$((l_check - 1)),$((l_check + 2))p" "$B" | grep -q "die "'
 check "Typ für xorriso und Typ in der GPT sind derselbe (Basic data)" '[[ $LFSSH_TYPE_XORRISO == a2a0d0ebe5b9334487c068b6b72699c7 && $LFSSH_TYPE_GPT == EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 ]]'
+hd=$(sed -n '/^host_deps() {$/,/^}$/p' "$B")
+check "host_deps installiert fdisk (sfdisk fehlt sonst im Container ubuntu:26.04) und prüft gleich jedes Werkzeug für LF-SSH" 'grep -qE "^[[:space:]]+debootstrap .* fdisk( |$)" <<<"$hd" && grep -qF "for c in xorriso mkfs.vfat mcopy mdir sfdisk blkid cmp; do" <<<"$hd" && grep -qF "|| die \"Build-Werkzeug fehlt: \$c\"" <<<"$hd"'
 
 echo "LIESMICH.txt:"
 check "kein Schlüsselmaterial, nur ein Platzhalter" '! grep -Eq "AAAA[A-Za-z0-9+/]{8,}|PRIVATE KEY|PuTTY-User-Key" "$L" && grep -qF "ssh-ed25519 AAAA… name@rechner" "$L"'
@@ -122,6 +126,18 @@ else
 	out=$(lfssh_check "$T/ziffer9" "$T/mbr-xorriso.bin")
 	check_rc=$?
 	check "ein Dateiname mit Ziffer am Ende (sfdisk nennt die Partition dann …p3)" '((check_rc == 0)) || { echo "$out"; false; }'
+
+	echo "Fehler beim Benennen:"
+	head -c 1048576 /dev/zero >"$T/ohne-tabelle.img"
+	lfssh_name "$T/ohne-tabelle.img" 2>"$T/name.err"
+	name_rc=$?
+	check "ohne Partitionstabelle: Status 1, die Meldung von sfdisk steht auf stderr" '((name_rc == 1)) && grep -q "sfdisk" "$T/name.err"'
+	mkdir -p "$T/ohne-sfdisk"
+	for c in dd mktemp rm cat; do ln -s "$(command -v "$c")" "$T/ohne-sfdisk/$c"; done
+	cp "$T/ohne-name.iso" "$T/ohne-sfdisk.iso"
+	PATH=$T/ohne-sfdisk lfssh_name "$T/ohne-sfdisk.iso" 2>"$T/name.err"
+	name_rc=$?
+	check "ohne sfdisk, wie im Container ubuntu:26.04 ohne fdisk: Status 1, stderr nennt sfdisk, das ISO bleibt" '((name_rc == 1)) && grep -q "sfdisk" "$T/name.err" && cmp -s "$T/ohne-sfdisk.iso" "$T/ohne-name.iso"'
 fi
 
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
