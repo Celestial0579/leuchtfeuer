@@ -1,0 +1,16 @@
+# Leuchtfeuer (GHSA-cmcp-h343-c4gj): lf-claude erreicht sshd auf diesem Rechner nicht, auch nicht
+# als rescue mit dem Einmal-Passwort. Die Regel weist jede TCP-Verbindung von lf-claude auf Port 22
+# an eine eigene Adresse ab (127.0.0.0/8, ::1, ::ffff:127.0.0.1 und die Adressen der Karten), bevor
+# sie sshd erreicht. Andere Benutzer und Verbindungen zu anderen Rechnern betrifft sie nicht.
+#
+# Geladen von lf-claude-ssh-sperre.service beim Start. ssh.service und ssh.socket starten nur
+# mit ihr. Erneutes Laden ersetzt die Tabelle, statt eine zweite Regel anzuhängen. Den Zähler
+# liest selftest_ssh_lokal.
+table inet lf_claude_ssh
+delete table inet lf_claude_ssh
+table inet lf_claude_ssh {
+	chain ausgang {
+		type filter hook output priority filter; policy accept;
+		meta skuid "lf-claude" tcp dport 22 fib daddr type local counter reject with tcp reset comment "lf-claude-ssh"
+	}
+}

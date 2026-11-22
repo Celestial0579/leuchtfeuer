@@ -137,6 +137,14 @@ log "Dienste"
 systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service lf-passwort-sperre.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
+# ssh.service und ssh.socket starten nur mit der Regel, die lf-claude den Weg zu sshd auf diesem
+# Rechner sperrt (GHSA-cmcp-h343-c4gj). Nach dem disable, damit es die Verweise nicht entfernt.
+systemctl enable lf-claude-ssh-sperre.service
+# systemd-ssh-generator bindet sshd sonst bei jedem Start an den AF_UNIX-Socket
+# /run/ssh-unix-local/socket (Modus 0666) und in einer VM mit /dev/vsock an vsock-Port 22, beides
+# unabhängig vom Menü und an der Regel vorbei, die nur TCP sieht (GHSA-cmcp-h343-c4gj).
+mkdir -p /etc/systemd/system-generators
+ln -s /dev/null /etc/systemd/system-generators/systemd-ssh-generator
 # Keine Wartezeit auf Netzwerk beim Booten
 systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service >/dev/null 2>&1 || true
 # Keine automatischen Updates im Live-System

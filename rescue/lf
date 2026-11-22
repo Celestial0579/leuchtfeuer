@@ -78,6 +78,7 @@ selftest() {
 	selftest_owner || ok=0
 	selftest_netz || ok=0
 	selftest_lauscht || ok=0
+	selftest_ssh_lokal || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -547,6 +548,80 @@ selftest_lauscht() {
 	else
 		echo "LF-SELFTEST: Netz: rpcbind maskiert, außerhalb von loopback lauscht nichts"
 	fi
+}
+
+# selftest_ssh_lokal   lf-claude erreicht sshd auf diesem Rechner nicht (GHSA-cmcp-h343-c4gj), auch
+#   nicht als rescue mit dem Einmal-Passwort. Geprüft wird: lf-claude-ssh-sperre.service ist aktiv,
+#   ssh.service und ssh.socket brauchen ihn (Requires), neben ihnen führt kein Weg zu sshd
+#   (tools_ssh_nebenwege: systemd-ssh-generator maskiert, kein /run/ssh-unix-local/socket, keine
+#   Einheit sshd-*.socket), und geladen ist genau die Regel aus lf-claude-ssh.nft. Dann je Ziel eine
+#   Verbindung von lf-claude auf Port 22: Sie scheitert und trifft die Regel, ihr Zähler steigt.
+#   Eine Verbindung von root auf 127.0.0.1:22 trifft sie nicht. Ziele sind 127.0.0.1 und 127.0.0.2,
+#   mit IPv6 auch ::1 und ::ffff:127.0.0.1, dazu je eine eigene Adresse der Karten (IPv4, IPv6
+#   global, IPv6 link-local mit %Karte), soweit es sie gibt. Es wird nur verbunden, nie angemeldet:
+#   Die Verbindung endet, ohne dass ein Byte gesendet wird.
+selftest_ssh_lokal() {
+	local u uid a weg vor nach good=1
+	local -a ziele=(127.0.0.1 127.0.0.2)
+	if ! systemctl is-active --quiet lf-claude-ssh-sperre.service; then
+		echo "LF-SELFTEST: SSH lokal: lf-claude-ssh-sperre.service ist nicht aktiv"
+		good=0
+	fi
+	for u in ssh.service ssh.socket; do
+		if [[ " $(systemctl show -p Requires --value "$u" 2>/dev/null) " != *" lf-claude-ssh-sperre.service "* ]]; then
+			echo "LF-SELFTEST: SSH lokal: $u startet auch ohne lf-claude-ssh-sperre.service"
+			good=0
+		fi
+	done
+	weg=$(tools_ssh_nebenwege)
+	if [[ -n $weg ]]; then
+		sed 's/^/LF-SELFTEST: SSH lokal: Weg zu sshd an der Regel vorbei: /' <<<"$weg"
+		good=0
+	fi
+	if ! uid=$(id -u lf-claude 2>/dev/null) || ! selftest_ssh_lokal_regel "$uid"; then
+		echo "LF-SELFTEST: SSH lokal: die Regel aus lf-claude-ssh.nft ist nicht geladen (nft list table inet lf_claude_ssh)"
+		return 1
+	fi
+	ip -6 -o addr show dev lo 2>/dev/null | grep -q ' ::1/128 ' && ziele+=(::1 ::ffff:127.0.0.1)
+	a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+	[[ -n $a ]] && ziele+=("$a")
+	a=$(ip -6 -o addr show scope global -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+	[[ -n $a ]] && ziele+=("$a")
+	a=$(ip -6 -o addr show scope link -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); sub(/@.*/, "", $2); print $4 "%" $2; exit}')
+	[[ -n $a ]] && ziele+=("$a")
+	for a in "${ziele[@]}"; do
+		vor=$(selftest_ssh_lokal_treffer)
+		if selftest_as timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/22"' _ "$a" 2>/dev/null; then
+			echo "LF-SELFTEST: SSH lokal: lf-claude erreicht Port 22 auf $a"
+			good=0
+		fi
+		nach=$(selftest_ssh_lokal_treffer)
+		if [[ ! $vor =~ ^[0-9]+$ || ! $nach =~ ^[0-9]+$ ]] || ((nach <= vor)); then
+			echo "LF-SELFTEST: SSH lokal: die Verbindung von lf-claude auf $a trifft die Regel nicht (Zähler ${vor:-?} -> ${nach:-?})"
+			good=0
+		fi
+	done
+	vor=$(selftest_ssh_lokal_treffer)
+	timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/22"' _ 127.0.0.1 2>/dev/null || :
+	nach=$(selftest_ssh_lokal_treffer)
+	if [[ ! $vor =~ ^[0-9]+$ || $nach != "$vor" ]]; then
+		echo "LF-SELFTEST: SSH lokal: die Regel trifft auch root (Zähler ${vor:-?} -> ${nach:-?})"
+		good=0
+	fi
+	((good)) && echo "LF-SELFTEST: SSH lokal: lf-claude erreicht Port 22 auf eigenen Adressen nicht (${ziele[*]}), root trifft die Regel nicht"
+	((good))
+}
+
+# selftest_ssh_lokal_regel UID   In der Tabelle inet lf_claude_ssh steht genau, was lf-claude-ssh.nft
+#   lädt (tools_ssh_regel).
+selftest_ssh_lokal_regel() {
+	nft -j list table inet lf_claude_ssh 2>/dev/null | tools_ssh_regel "$1"
+}
+
+# selftest_ssh_lokal_treffer   Wie viele Pakete die Regel lf-claude-ssh bisher abgewiesen hat.
+selftest_ssh_lokal_treffer() {
+	nft -j list chain inet lf_claude_ssh ausgang 2>/dev/null |
+		jq -er '[.nftables[] | .rule? // empty | select(.comment == "lf-claude-ssh") | .expr[] | .counter? // empty | .packets] | if length == 1 then .[0] else empty end'
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
