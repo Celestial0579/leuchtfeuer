@@ -131,6 +131,13 @@ persist_config_load() {
 
 persist_is_open() { mountpoint -q "$LF_PERSIST"; }
 
+# persist_encrypted   Ist der Speicher offen und verschlüsselt (LUKS)? Nur dann merkt sich SSH
+#   Fingerabdrücke und Hostschlüssel (#99): Auf einem unverschlüsselten Speicher könnte sie jeder
+#   lesen und ändern, der den Stick in der Hand hat.
+persist_encrypted() {
+	persist_is_open && [[ $(findmnt -n -o SOURCE "$LF_PERSIST" 2>/dev/null | head -n1) == "$PERSIST_MAPPER_DEV" ]]
+}
+
 # Persistenz entsperren und einhängen; danach Home-Verzeichnisse umlenken.
 persist_open() {
 	persist_is_open && return 0

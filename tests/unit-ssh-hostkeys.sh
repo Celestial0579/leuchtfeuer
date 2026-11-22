@@ -13,9 +13,15 @@ T=$(mktemp -d)
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/tools.sh
+# shellcheck disable=SC1091
+. rescue/lib/sshkeys.sh
 LF_LOG="$T/log"
 LF_SSH_DIR="$T/ssh"
+# Ohne Schlüssel von LF-SSH und ohne verschlüsselten Speicher (#99, tests/unit-ssh-schluessel.sh)
+SSHKEYS_DIR="$T/run-lf-ssh"
+SSHKEYS_MODE_CONF="$T/00-lf-anmeldung.conf"
 mkdir -p "$LF_SSH_DIR"
+persist_encrypted() { return 1; }
 UNIT=build/overlay/etc/systemd/system/lf-ssh-hostkeys.service
 
 KEYGEN_OK=1

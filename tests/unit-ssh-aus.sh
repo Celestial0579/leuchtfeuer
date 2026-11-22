@@ -18,6 +18,9 @@ T=$(mktemp -d)
 . rescue/lib/tools.sh
 LF_LOG="$T/log"
 LF_SSH_CGROUP="$T/cgroup"
+# Art der Anmeldung, die Werkzeuge > SSH beim Einschalten schreibt (#99). Fehlt sie, galt das
+# Einmal-Passwort.
+SSHKEYS_MODE_CONF="$T/00-lf-anmeldung.conf"
 ME=$(id -un)
 RE='sshd|sshd-session|sshd-auth'
 
@@ -109,6 +112,14 @@ tools_ssh
 check "Passwort gesperrt, sshd gestoppt" '[[ -n $(at "usermod -p ! $ME") && -n $(at "systemctl stop ssh.service") ]]'
 check "keine Sitzung beendet" '! grep -q "^loginctl" "$T/sudo"'
 check "der Dialog sagt nur, dass SSH aus ist" '[[ $(shown) == "SSH SSH ist aus. Das Einmal-Passwort gilt nicht mehr. " ]]'
+
+echo "Ja, angemeldet wurde nur mit Schlüsseln von LF-SSH (#99):"
+start "1 login" --
+printf '%s\n' "# Von Werkzeuge > SSH beim Einschalten geschrieben (#99)." "PasswordAuthentication no" "AuthenticationMethods publickey" >"$SSHKEYS_MODE_CONF"
+tools_ssh
+rm -f "$SSHKEYS_MODE_CONF"
+check "das Passwort bleibt gesperrt, sshd gestoppt" '[[ -n $(at "usermod -p ! $ME") && -n $(at "systemctl stop ssh.service") ]]'
+check "der Dialog nennt kein Einmal-Passwort" '[[ $(shown) == "SSH SSH ist aus. " ]]'
 
 echo "Eine Sitzung endet, eine bleibt:"
 STUCK=4

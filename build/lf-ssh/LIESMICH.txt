@@ -1,0 +1,23 @@
+LF-SSH: eigene SSH-Schlüssel für Leuchtfeuer
+
+Hierher gehört genau eine Datei: authorized_keys (authorized_keys.txt gilt auch). Darin steht je
+Zeile ein ÖFFENTLICHER Schlüssel, etwa der Inhalt von id_ed25519.pub:
+
+    ssh-ed25519 AAAA… name@rechner
+
+Nie den privaten Schlüssel hierher legen (id_ed25519 ohne .pub, eine .ppk-Datei von PuTTY): Diese
+Partition kann jeder lesen, der den Stick in der Hand hat.
+
+- Es gelten ssh-ed25519, ecdsa-sha2-nistp256/384/521, ssh-rsa ab 3072 Bit und Sicherheitsschlüssel
+  (sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com). Kein DSA, keine Zertifikate,
+  keine Optionen vor dem Schlüssel. Höchstens 20 Schlüssel, die Datei höchstens 64 KiB.
+- Die Datei nur an einem vertrauenswürdigen Rechner bearbeiten. Wer sie ändern kann, meldet sich
+  später per SSH als root an jedem Rechner an, an dem dieser Stick startet und SSH eingeschaltet
+  wird.
+- Leuchtfeuer liest die Datei beim Start, nur von diesem Stick und nur lesend. SSH bleibt aus, bis
+  es am Rechner selbst eingeschaltet wird (Werkzeuge > SSH). Dann zeigt Leuchtfeuer die
+  Fingerabdrücke und fragt, ob die Schlüssel gelten. Gilt einer, gilt kein Passwort.
+- Einen Schlüssel entfernen: seine Zeile an einem anderen Rechner löschen.
+
+Mehr dazu in der Anleitung, Abschnitt „Fernzugriff per SSH“:
+https://github.com/Celestial0579/leuchtfeuer/blob/main/docs/anleitung.md

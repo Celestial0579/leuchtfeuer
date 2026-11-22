@@ -2609,6 +2609,21 @@ persist_now() {
 		tr '\n\0' '?\n' | sort
 }
 
+# hostkeys_mark   Mit offenem Speicher kann eine Freigabe die SSH-Hostschlüssel lesen, die dort
+#   gemerkten (config/ssh/hostkeys) und die dieses Starts in /etc/ssh, die das nächste Einschalten von
+#   SSH dort merkt (#99, Regel 11). Die Markierung $PERSIST/config/ssh/hostkeys-freigabe (/etc/lf/ssh)
+#   bringt den Assistenten dazu, beim nächsten Einschalten neue zu erzeugen oder, wenn schon welche
+#   gemerkt sind, dazu zu raten. Aufgerufen beim Freischalten, vor dem Bild des Speichers (so ist sie
+#   kein Rückstand, und wer sie während der Freigabe löscht, hinterlässt einen), und beim Ende, falls
+#   der Speicher erst während der Freigabe aufging. Eine vorhandene Markierung bleibt, wie sie ist.
+hostkeys_mark() {
+	local c=$PERSIST/config d=$PERSIST/config/ssh
+	persist_mounted || return 0
+	[[ -d $c && ! -L $c && ! -L $d ]] || return 0
+	[[ -e $d/hostkeys-freigabe || -L $d/hostkeys-freigabe ]] && return 0
+	(umask 077 && mkdir -p -- "$d" && date '+%F %R' >"$d/hostkeys-freigabe") 2>/dev/null || true
+}
+
 # persist_changed   Was sich auf dem Speicher seit dem Freischalten geändert hat: je Zeile eine Datei
 #   oder ein Ordner in PERSIST_DIRS. Ist er während der Freigabe ein- oder ausgehängt worden, ist
 #   sein Inhalt ungeprüft.
@@ -2659,6 +2674,7 @@ snapshot() {
 	creds_now >"$SNAP/creds"
 	efivars_now >"$SNAP/efivars"
 	if persist_mounted; then echo offen; else echo zu; fi >"$SNAP/persist-zustand"
+	hostkeys_mark
 	persist_now >"$SNAP/persist"
 	chmod 0600 "$SNAP"/*
 	# Für jeden lesbar nur, was status ohne root braucht (quick_residue, kept_unit): die Einheiten,
@@ -2990,6 +3006,8 @@ off() {
 	if ((had)); then
 		install -d /run/lf
 		date +%s >"$LAST" && chmod 0644 "$LAST"
+		# Ging der Speicher erst während der Freigabe auf, konnte sie die Hostschlüssel auch lesen.
+		hostkeys_mark
 	fi
 	return 0
 }

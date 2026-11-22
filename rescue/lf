@@ -9,7 +9,7 @@ set -u
 
 LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
 [[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools pam; do
+for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools sshkeys pam; do
 	# shellcheck disable=SC1090
 	. "$LF_LIB/$f.sh"
 done
@@ -79,6 +79,7 @@ selftest() {
 	selftest_netz || ok=0
 	selftest_lauscht || ok=0
 	selftest_ssh_lokal || ok=0
+	selftest_ssh "$dir" || ok=0
 	selftest_ptrace || ok=0
 	# Werkzeuge vorhanden?
 	local t
@@ -623,6 +624,52 @@ selftest_ssh_lokal_regel() {
 selftest_ssh_lokal_treffer() {
 	nft -j list chain inet lf_claude_ssh ausgang 2>/dev/null |
 		jq -er '[.nftables[] | .rule? // empty | select(.comment == "lf-claude-ssh") | .expr[] | .counter? // empty | .packets] | if length == 1 then .[0] else empty end'
+}
+
+# selftest_ssh ORDNER   SSH (#99). Das Laden der Schlüssel von LF-SSH ist beim Start gelaufen, und
+#   sshd nimmt, was lf.conf und der Schalter von Werkzeuge > SSH (sshkeys_mode_text) festlegen: nur
+#   authorized_keys unter $SSHKEYS_DIR, nur der Live-Benutzer, nie root, nie lf-claude, keine
+#   Weiterleitung, LogLevel VERBOSE. Mit Schlüsseln gilt nur ein Schlüssel, ohne sie nur das
+#   Passwort. Geprüft mit sshd -T für beide Fälle, mit einem Wegwerf-Hostschlüssel. LF_SSHD und
+#   LF_SSHD_CONFIG ersetzt der Unit-Test.
+selftest_ssh() {
+	local d=$1/ssh good=1 mode out w st sshd=${LF_SSHD:-/usr/sbin/sshd} conf=${LF_SSHD_CONFIG:-/etc/ssh/sshd_config}
+	local -a want=() common=(
+		"authorizedkeysfile $SSHKEYS_DIR/authorized_keys" "allowusers rescue" "denyusers lf-claude"
+		"permitrootlogin no" "kbdinteractiveauthentication no" "usepam yes" "permituserrc no" "disableforwarding yes"
+		"allowagentforwarding no" "allowtcpforwarding no" "allowstreamlocalforwarding no"
+		"x11forwarding no" "permittunnel no" "loglevel VERBOSE")
+	if [[ -z ${LF_SSHD_CONFIG:-} ]]; then
+		if st=$(cat "$SSHKEYS_DIR/status" 2>/dev/null) && [[ -n $st ]]; then
+			# shellcheck disable=SC2086
+			echo "LF-SELFTEST: SSH: beim Start: $(sshkeys_status_text $st)"
+		else
+			echo "LF-SELFTEST: SSH: Die Schlüssel von LF-SSH wurden beim Start nicht geladen (lf-ssh-schluessel.service)"
+			good=0
+		fi
+		install -d -m 755 /run/sshd
+	fi
+	mkdir -p "$d"
+	rm -f "$d/hostkey" "$d/hostkey.pub"
+	ssh-keygen -q -t ed25519 -N '' -C selftest -f "$d/hostkey" </dev/null >/dev/null || good=0
+	for mode in passwort schluessel; do
+		sshkeys_mode_text "$mode" >"$d/00-lf-anmeldung.conf"
+		printf 'Include %s\nInclude %s\n' "$d/00-lf-anmeldung.conf" "$conf" >"$d/sshd_config"
+		out=$("$sshd" -T -f "$d/sshd_config" -h "$d/hostkey" -C user=rescue,host=localhost,addr=127.0.0.1 2>&1)
+		if [[ $mode == schluessel ]]; then
+			want=("${common[@]}" "passwordauthentication no" "authenticationmethods publickey")
+		else
+			want=("${common[@]}" "passwordauthentication yes" "authenticationmethods password")
+		fi
+		for w in "${want[@]}"; do
+			if ! grep -qixF -- "$w" <<<"$out"; then
+				echo "LF-SELFTEST: SSH ($mode): sshd -T nennt nicht: $w"
+				good=0
+			fi
+		done
+	done
+	((good)) && echo "LF-SELFTEST: SSH: nur Schlüssel aus $SSHKEYS_DIR oder nur das Einmal-Passwort, nur rescue, keine Weiterleitung"
+	((good))
 }
 
 # selftest_ptrace   ptrace ist gesperrt (#85): kernel.yama.ptrace_scope ist 3. Den Wert setzt
@@ -1457,7 +1504,7 @@ s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(
 # Hauptmenü
 # ---------------------------------------------------------------------------
 main_menu() {
-	local overview default choice hint extra=()
+	local overview default choice hint ssh extra=()
 	while true; do
 		ui_info "Leuchtfeuer" "Prüfe angeschlossene Disks (SMART) …"
 		# Direkt aufrufen, nicht in $( … ): Aus einer Subshell käme DISKS_ANY_BAD nicht zurück.
@@ -1468,7 +1515,10 @@ main_menu() {
 		extra=()
 		tmux has-session -t lf-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
 		hint=$(claude_freigabe_hinweis)
-		choice=$(ui_menu "Leuchtfeuer" "${hint:+$hint\n\n}$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
+		# SSH (#99): Anmeldungen ins Protokoll, offene Sitzungen über der Übersicht
+		tools_ssh_log_sync
+		ssh=$(tools_ssh_hinweis)
+		choice=$(ui_menu "Leuchtfeuer" "${hint:+$hint\n\n}${ssh:+$ssh\n\n}$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
 			--default-item "$default" -- \
 			"${extra[@]}" \
 			rescue "Datenrettung von defekter Disk (Image auf Ziel-Disk)" \
@@ -1558,6 +1608,11 @@ case ${1:-} in
 	echo "Leuchtfeuer $LF_VERSION"
 	exit 0
 	;;
+--ssh-schluessel)
+	# lf-ssh-schluessel.service, als root beim Start: SSH-Schlüssel von LF-SSH lesen (#99)
+	sshkeys_load
+	exit $?
+	;;
 esac
 
 sudo install -d -o "$(id -u)" -g "$(id -g)" "$LF_RUN"
@@ -1570,6 +1625,7 @@ if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
 	ui_msg "Claude-Freigabe" "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $(text_clean 300 <<<"${freigabe_ende:-unbekannt}")\n\nSicher endet root-Zugriff nur mit einem Neustart."
 fi
 persist_startup
+sshkeys_notice
 ui_init
 claude_update_bg
 main_menu

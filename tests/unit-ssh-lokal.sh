@@ -315,6 +315,11 @@ id() { if [[ $* == "-u lf-claude" ]]; then echo 999; else command id "$@"; fi; }
 # Ohne das läse der Test die des Rechners, auf dem er läuft.
 loginctl() { :; }
 LF_SSH_CGROUP="$T/kein-cgroup"
+# Schlüssel von LF-SSH (#99) und gemerkte Hostschlüssel prüft unit-ssh-schluessel.sh. Hier gilt
+# kein Schlüssel, und die Hostschlüssel kommen wie ohne verschlüsselten Speicher.
+sshkeys_confirm() { return 1; }
+sshkeys_mode() { return 0; }
+tools_ssh_hostkeys() { run sudo ssh-keygen -A; }
 ip() { echo "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0"; }
 ui_msg() { printf '%s\n%s\n' "$1" "$2" >>"$T/dialog"; }
 ui_yesno() { return 1; }

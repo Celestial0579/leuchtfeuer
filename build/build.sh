@@ -39,6 +39,9 @@ die() { printf '\033[1;31mFEHLER:\033[0m %s\n' "$*" >&2; exit 1; }
 # pam_pruefen vor dem squashfs (GHSA-j332-2v26-m4qm)
 # shellcheck source=rescue/lib/pam.sh
 . "$SRC/rescue/lib/pam.sh"
+# Partition LF-SSH für eigene SSH-Schlüssel (#99)
+# shellcheck source=build/lf-ssh/partition.sh
+. "$SRC/build/lf-ssh/partition.sh"
 
 # ---------------------------------------------------------------------------
 # Mounts im chroot, beim Beenden immer aufräumen
@@ -273,6 +276,11 @@ boot_files() {
 	mmd -i "$efi" ::/boot ::/boot/grub ::/boot/grub/x86_64-efi
 	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/grub.cfg
 	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/x86_64-efi/grub.cfg
+
+	# Partition LF-SSH: Dort legt der Besitzer des Sticks seine öffentlichen SSH-Schlüssel ab (#99).
+	# Im ISO liegt darin nur LIESMICH.txt.
+	log "Partition LF-SSH"
+	lfssh_image "$WORK/lf-ssh.img" "$SRC/build/lf-ssh/LIESMICH.txt" || die "Das Image für LF-SSH ließ sich nicht erzeugen."
 }
 
 # ---------------------------------------------------------------------------
@@ -327,6 +335,7 @@ make_iso() {
 		--grub2-mbr "$WORK/boot_hybrid.img" \
 		-partition_offset 16 --mbr-force-bootable \
 		-append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b "$WORK/efi.img" \
+		-append_partition "$LFSSH_PART" "$LFSSH_TYPE_XORRISO" "$WORK/lf-ssh.img" \
 		-appended_part_as_gpt \
 		-iso_mbr_part_type a2a0d0eb-e5b9-3344-87c0-68b6b72699c7 \
 		-c boot.catalog \
@@ -334,6 +343,14 @@ make_iso() {
 		-eltorito-alt-boot \
 		-e '--interval:appended_partition_2:::' -no-emul-boot \
 		"$ISO"
+	# Die Partition LF-SSH benennen und das Ergebnis prüfen (#99). Der erste Sektor muss danach
+	# derselbe sein, den xorriso geschrieben hat (#106).
+	local check
+	dd if="$OUT/$ISO_NAME" of="$WORK/mbr-xorriso.bin" bs=512 count=1 status=none
+	lfssh_name "$OUT/$ISO_NAME" || die "Partition $LFSSH_PART ließ sich nicht $LFSSH_LABEL nennen."
+	if ! check=$(lfssh_check "$OUT/$ISO_NAME" "$WORK/mbr-xorriso.bin"); then
+		die "Partition $LFSSH_LABEL im ISO: ${check//$'\n'/; }"
+	fi
 	(cd "$OUT" && sha256sum "$ISO_NAME" >"$ISO_NAME.sha256")
 	local size
 	size=$(stat -c %s "$OUT/$ISO_NAME")

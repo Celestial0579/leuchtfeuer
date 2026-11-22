@@ -9,6 +9,8 @@
 #   - mit einer auffälligen Disk ist "rescue" vorausgewählt und die Empfehlung nennt sie,
 #   - mit unauffälligen Disks ist "clone" vorausgewählt,
 #   - die Übersicht mit dem Zustand jeder Disk steht im Menütext,
+#   - läuft SSH, steht der Hinweis auf offene Sitzungen über der Übersicht, und das Menü übernimmt
+#     die Anmeldungen ins Protokoll (#99),
 #   - disks_overview gibt weiter dieselbe Tabelle aus (Claude-Kontext, Tests).
 # Ohne Disks und ohne Dialoge.
 set -u
@@ -49,6 +51,9 @@ ui_menu() {
 }
 power_menu() { return 0; }
 claude_freigabe_hinweis() { :; }
+# SSH (#99): Jeder Aufruf der Übernahme ins Protokoll steht in $T/ssh-sync, der Hinweis in $T/ssh-hinweis.
+tools_ssh_log_sync() { echo sync >>"$T/ssh-sync"; }
+tools_ssh_hinweis() { cat "$T/ssh-hinweis" 2>/dev/null; }
 tmux() { return 1; }
 log() { :; }
 
@@ -83,6 +88,16 @@ menue_zeigen
 check "kein Abbruch, keine Fehlermeldung" '((rc == 0)) && [[ ! -s $T/out ]]'
 check "Klonen ist vorausgewählt" '[[ $(vorauswahl) == clone ]]'
 check "die Empfehlung sagt: alle unauffällig" 'grep -qF "Empfehlung: alle Disks unauffällig" "$T/menu"'
+check "SSH aus: kein Hinweis, die Übersicht steht vorn" '! grep -qF "SSH ist" "$T/menu" && sed -n 2p "$T/menu" | grep -q "^GERÄT"'
+
+echo "SSH an:"
+echo 'SSH ist an: 1 offene Sitzung (192.0.2.5).' >"$T/ssh-hinweis"
+rm -f "$T/ssh-sync"
+menue_zeigen
+check "kein Abbruch, keine Fehlermeldung" '((rc == 0)) && [[ ! -s $T/out ]]'
+check "der Hinweis steht über der Übersicht" 'sed -n 2p "$T/menu" | grep -qF "SSH ist an: 1 offene Sitzung (192.0.2.5).\n\nGERÄT"'
+check "das Menü übernimmt die Anmeldungen ins Protokoll" '[[ $(wc -l <"$T/ssh-sync") == 1 ]]'
+rm -f "$T/ssh-hinweis"
 
 echo "Ausgabe für andere Aufrufer:"
 echo 'WARN|3 umgelagerte Sektoren' >"$T/smart-sda"

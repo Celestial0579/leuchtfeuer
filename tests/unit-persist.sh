@@ -287,6 +287,20 @@ persist_create
 rc=$?
 result
 check "Anlegen sieht sie auch: kein zweiter Speicher (die Sperre in persist_create)" '[[ $rc != 0 && $SUDO != *sgdisk* && $MSG == *"schon eine Partition"* ]]'
+# Seit #99 liegt hinter der EFI-Partition die Partition LF-SSH für eigene SSH-Schlüssel, dahinter
+# die Lücke. Ein neu angelegter Speicher LF-DATA bekommt die Nummer 5.
+stick
+PARTS="/dev/sda1 /dev/sda ISO9660 LEUCHTFEUER iso9660
+/dev/sda2 /dev/sda Appended2 LF_EFI vfat
+/dev/sda3 /dev/sda LF-SSH LF-SSH vfat
+/dev/sda4 /dev/sda Gap1 - -
+/dev/sda5 /dev/sda LF-DATA LF-DATA ext4"
+check "Stick mit LF-SSH (#99): LF-DATA dahinter wird gefunden, keine Partition gilt als fremd" '[[ $(persist_find) == /dev/sda5 && -z $(persist_foreign) ]]'
+PARTS="/dev/sda1 /dev/sda ISO9660 LEUCHTFEUER iso9660
+/dev/sda2 /dev/sda Appended2 LF_EFI vfat
+/dev/sda3 /dev/sda LF-SSH LF-SSH vfat
+/dev/sda4 /dev/sda Gap1 - -"
+check "ohne LF-DATA ist LF-SSH kein Speicher" '! persist_find >/dev/null && [[ -z $(persist_find) ]]'
 normal
 check "LF-DATA auf dem Stick, nicht die gleichnamige auf der internen Disk" '[[ $(persist_find) == /dev/sdb3 ]]'
 check "die fremde Partition wird als fremd erkannt" '[[ $(persist_foreign) == /dev/sda9 ]]'
