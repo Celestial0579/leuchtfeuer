@@ -62,8 +62,16 @@ tools_mem() {
 }
 
 tools_ssh() {
+	local rest
 	if systemctl is-active -q ssh; then
 		ui_yesno "SSH" "SSH ist an. Ausschalten?\n\nDas beendet auch alle offenen SSH-Sitzungen." && tools_ssh_off
+		return 0
+	fi
+	# SSH ist aus, aber es läuft noch etwas davon, etwa nach systemctl stop ssh in einer Shell:
+	# Das endet zuerst, wie beim Ausschalten.
+	rest=$(tools_ssh_rest)
+	if [[ -n $rest ]]; then
+		ui_yesno "SSH" "SSH ist aus, aber noch läuft:\n\n${rest//$'\n'/\\n}\n\nBeenden? Das sperrt auch das Einmal-Passwort." && tools_ssh_off
 		return 0
 	fi
 	is_online || { ui_msg "SSH" "Keine Netzwerkverbindung."; return 0; }
@@ -81,21 +89,29 @@ tools_ssh() {
 	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
 }
 
+# Die Prozesse von sshd: der wartende, der je Verbindung und der bei der Anmeldung.
+TOOLS_SSH_RE='sshd|sshd-session|sshd-auth'
+
 # tools_ssh_off   Schaltet SSH aus (GHSA-45m7-28wq-mxq8): Das Einmal-Passwort gilt nicht mehr, sshd
 #   nimmt keine Verbindung mehr an, und jede SSH-Sitzung endet samt allem, was in ihr läuft, auch
 #   eine Verbindung, die noch bei der Anmeldung ist. systemctl stop allein beendet nur den sshd, der
 #   auf Verbindungen wartet: Angemeldete Sitzungen liegen in eigenen Scopes von logind, und für
-#   ssh.service gilt bei Ubuntu KillMode=process. Bleibt etwas übrig, sagt das der Dialog.
+#   ssh.service gilt bei Ubuntu KillMode=process. Was sshd ohne Sitzung von logind startet, bleibt
+#   im cgroup von ssh.service: Darum endet dort zuerst alles mit SIGKILL. Bleibt etwas übrig, sagt
+#   das der Dialog.
 tools_ssh_off() {
-	local re='sshd|sshd-session|sshd-auth' id n=0 sessions procs msg="SSH ist aus."
+	local re=$TOOLS_SSH_RE id n=0 sessions procs cg msg="SSH ist aus."
 	local -a left=()
 	if run sudo usermod -p '!' "$(id -un)"; then
 		msg+=" Das Einmal-Passwort gilt nicht mehr."
 	else
 		left+=("Das Einmal-Passwort ließ sich nicht sperren.")
 	fi
-	run sudo systemctl stop ssh.socket ssh.service
-	# Erst alle Prozesse von sshd: Danach entsteht keine Sitzung mehr. Dann, was in den Sitzungen
+	# Zuerst der Socket: Danach startet keine Verbindung ssh.service neu.
+	run sudo systemctl stop ssh.socket
+	run sudo systemctl kill --signal=SIGKILL ssh.service
+	run sudo systemctl stop ssh.service
+	# Dann alle Prozesse von sshd: Danach entsteht keine Sitzung mehr. Dann, was in den Sitzungen
 	# noch läuft, auch im Hintergrund.
 	run sudo pkill -KILL -x "$re"
 	for id in $(tools_ssh_sessions); do
@@ -107,17 +123,40 @@ tools_ssh_off() {
 	for _ in 1 2 3 4 5 6 7 8 9 10; do
 		sessions=$(tools_ssh_sessions)
 		procs=$(sudo pgrep -l -x "$re")
-		[[ -z $sessions && -z $procs ]] && break
+		cg=$(tools_ssh_cgroup)
+		[[ -z $sessions && -z $procs && $cg == 0 ]] && break
 		sleep 0.3
 	done
 	[[ -n $sessions ]] && left+=("Noch offene SSH-Sitzungen: ${sessions//$'\n'/, }")
 	[[ -n $procs ]] && left+=("Noch laufende Prozesse von sshd: ${procs//$'\n'/, }")
+	[[ $cg != 0 ]] && left+=("Noch laufende Prozesse in ssh.service: $cg")
 	log "SSH ausgeschaltet, beendete SSH-Sitzungen: $n${left[*]:+. ${left[*]}}"
 	((n == 1)) && msg+="\n\n1 offene SSH-Sitzung wurde beendet."
 	((n > 1)) && msg+="\n\n$n offene SSH-Sitzungen wurden beendet."
 	((${#left[@]})) && msg+="\n\nNicht alles ist beendet:$(printf '\\n   %s' "${left[@]}")"
 	((n || ${#left[@]})) && msg+="\n\nWer per SSH angemeldet war, hatte root. Was er gestartet hat, kann weiterlaufen. Sicher endet das nur mit einem Neustart (Beenden > Neustart)."
 	ui_msg "SSH" "$msg"
+	return 0
+}
+
+# tools_ssh_rest   Was von SSH noch läuft, je Art eine Zeile: Sitzungen von logind aus sshd,
+#   Prozesse von sshd und alle Prozesse im cgroup von ssh.service. Leer, wenn nichts mehr läuft.
+tools_ssh_rest() {
+	local s p n
+	s=$(tools_ssh_sessions)
+	p=$(sudo pgrep -x "$TOOLS_SSH_RE" | grep -c .)
+	n=$(tools_ssh_cgroup)
+	[[ -n $s ]] && echo "SSH-Sitzungen: ${s//$'\n'/, }"
+	((p)) && echo "Prozesse von sshd: $p"
+	((n)) && echo "Prozesse in ssh.service: $n"
+	return 0
+}
+
+# tools_ssh_cgroup   Wie viele Prozesse im cgroup von ssh.service laufen (0, wenn es keins gibt).
+#   LF_SSH_CGROUP nennt für Tests eine andere Datei als cgroup.procs.
+tools_ssh_cgroup() {
+	local f=${LF_SSH_CGROUP:-/sys/fs/cgroup/system.slice/ssh.service/cgroup.procs}
+	if [[ -r $f ]]; then grep -c . "$f"; else echo 0; fi
 	return 0
 }
 

@@ -3,7 +3,7 @@
 # eigene (lf-ssh-hostkeys.service), und der Assistent zeigt ihre Fingerabdrücke, wenn er SSH
 # einschaltet. Ohne Schlüssel startet er ssh nicht.
 #
-# Hier wird kein ssh gestartet: sudo, systemctl, is_online, ip und die Dialoge sind Attrappen.
+# Hier wird kein ssh gestartet: sudo, systemctl, loginctl, is_online, ip und die Dialoge sind Attrappen.
 # Die Schlüssel entstehen mit dem echten ssh-keygen in einem eigenen Ordner.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -21,6 +21,10 @@ UNIT=build/overlay/etc/systemd/system/lf-ssh-hostkeys.service
 KEYGEN_OK=1
 is_online() { return 0; }
 systemctl() { return 3; } # is-active: ssh läuft nicht
+# Von SSH läuft nichts mehr (tools_ssh_rest): keine Sitzung von logind, kein cgroup von ssh.service.
+# Ohne das läse der Test die des Rechners, auf dem er läuft.
+loginctl() { :; }
+LF_SSH_CGROUP="$T/kein-cgroup"
 ip() { echo "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0"; }
 ui_msg() { printf '%s\n%s\n' "$1" "$2" >>"$T/dialog"; }
 ui_yesno() { return 1; }
