@@ -165,3 +165,27 @@ Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor steht `LF-SELFTEST: pt
    - Der Dialog nennt 1 beendete Sitzung und rät zum Neustart.
    - In der Shell (Werkzeuge > Shell) zeigen `loginctl list-sessions` keine Sitzung von SSH und `pgrep -a sleep` nichts mehr.
    - Ein neuer Versuch mit dem alten Passwort scheitert, auch nachdem SSH wieder eingeschaltet ist. Dann gilt nur das neue.
+
+11 Eigene SSH-Schlüssel (LF-SSH)
+--------------------------------
+
+Dafür einen Wegwerf-Schlüssel auf dem zweiten Rechner erzeugen (`ssh-keygen -t ed25519 -f ~/.ssh/lf-probe`), nie einen echten. Die Schritte 2 bis 5 mit einem frisch beschriebenen Stick ohne persistenten Speicher (die Frage danach beim Start mit Nein beantworten): Mit verschlüsseltem Speicher merkt sich der Assistent bestätigte Schlüssel und fragt nicht mehr.
+
+1. **Partition:** Den frisch beschriebenen Stick an Windows, macOS und Linux anstecken.
+   Erwartet: ein Laufwerk `LF-SSH` mit `LIESMICH.txt`, beschreibbar. Notiere, welche weiteren Laufwerke das System zeigt und ob es anbietet, eins zu formatieren (ablehnen).
+2. **Anmeldung mit Schlüssel:** Den Inhalt von `~/.ssh/lf-probe.pub` als `authorized_keys` nach LF-SSH kopieren, den Stick auswerfen, davon starten. Werkzeuge > SSH.
+   Erwartet:
+   - Der Assistent zeigt den Schlüssel mit demselben Fingerabdruck wie `ssh-keygen -lf ~/.ssh/lf-probe.pub` und fragt, ob er gilt.
+   - Nach „Ja“ meldet sich `ssh -i ~/.ssh/lf-probe rescue@…` ohne Passwort an.
+   - `ssh -o PubkeyAuthentication=no rescue@…` scheitert, ohne nach einem Passwort zu fragen.
+   - Das Protokoll des Assistenten nennt die Anmeldung mit dem Fingerabdruck.
+3. **Nein:** SSH aus, wieder ein, diesmal „Nein“.
+   Erwartet: Der Assistent zeigt ein Einmal-Passwort. Damit klappt die Anmeldung, mit dem Schlüssel nicht.
+4. **Falsche Zeile:** In `authorized_keys` eine zweite Zeile ergänzen, die mit `command="true" ` beginnt und dann denselben Schlüssel enthält. Neu starten.
+   Erwartet: Auf tty1 steht ein Hinweis mit der Zeilennummer 2. Der Schlüssel aus Zeile 1 gilt weiter.
+5. **Privater Schlüssel:** Eine Kopie von `~/.ssh/lf-probe` (ohne `.pub`) auf LF-SSH legen, neu starten.
+   Erwartet: Beim Start warnt der Assistent, dass ein privater Schlüssel ungeschützt auf dem Stick liegt, und verwendet ihn nicht. Danach die Kopie löschen.
+6. **Mit verschlüsseltem Speicher:** Auf dem Stick aus Abschnitt 3, Schritt 1 `authorized_keys` wie in Schritt 2 ablegen, zweimal starten und SSH einschalten.
+   Erwartet: Beim ersten Mal fragt der Assistent für den Schlüssel, beim zweiten Mal nicht mehr. Der Fingerabdruck des Hostschlüssels ist bei beiden Starts gleich. Nach einer Claude-Freigabe empfiehlt der Assistent beim nächsten Einschalten neue Hostschlüssel.
+7. **Zwei Sticks:** Mit dem zweiten Leuchtfeuer-Stick zusätzlich angesteckt starten.
+   Erwartet: Beim Start der Hinweis, dass Schlüssel von LF-SSH nicht gelten. Werkzeuge > SSH bietet nur das Einmal-Passwort an.

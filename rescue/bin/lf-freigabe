@@ -133,6 +133,9 @@ DOTFILES=(.bashrc .bash_profile .bash_login .bash_logout .profile .inputrc .tmux
 LIVE_USER=rescue
 # Die Ordner der Benutzer-Manager liegen unter USER_RUN/UID/systemd (user_paths_now).
 USER_RUN=$WROOT/run/user
+# Die Schlüssel von LF-SSH (#99, rescue/lib/sshkeys.sh): authorized_keys liest sshd bei jeder
+# Anmeldung, was in kandidaten steht, bietet das nächste Einschalten von SSH an (disable_ssh_keys).
+SSH_DIR=/run/lf/ssh
 # Dateien und Ordner, über die sich root einen Weg zurück einrichten kann, ohne dass ein Prozess
 # läuft. Die Wurzel des Live-Systems ist ein overlay, dessen obere Schicht (/cow/upper) im laufenden
 # System nicht eingehängt ist: Was sich im RAM geändert hat, sieht das Ende nur in dieser Liste. Ganz
@@ -143,7 +146,7 @@ USER_RUN=$WROOT/run/user
 # /run/finalrd (finalrd.service führt beim Ausschalten und Neustart jedes *.finalrd darin als root
 # aus, wie die unter /etc/finalrd), /run/dbus-1 (Dienste für D-Bus, vor denen unter /usr/share:
 # SHUTDOWN_PATHS), /run/lf-boot.env (disks.sh liest daraus, welche Disks zum Live-Medium gehören),
-# die Ablagen, aus
+# SSH_DIR mit den Schlüsseln von LF-SSH (ohne den Stand des Journals: files_now), die Ablagen, aus
 # denen Dienste beim Start Credentials laden (so lesen getty und login agetty.autologin und
 # login.noauth: Anmelden ohne Kennwort), cron der Benutzer, die Skripte von dpkg (sie laufen bei apt
 # als root), linger, DOTFILES in jedem Home unter /home und beim Live-Benutzer alles, was mit einem
@@ -159,7 +162,7 @@ WATCH=("$WROOT"/etc "$WROOT"/root "$WROOT"/run/systemd/*.conf.d "$WROOT"/run/sys
 	"$WROOT"/run/polkit-1/rules.d "$WROOT"/run/NetworkManager/conf.d "$WROOT"/run/NetworkManager/system-connections
 	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/finalrd "$WROOT"/run/dbus-1 "$WROOT"/run/lf-boot.env
 	"$WROOT"/run/credstore "$WROOT"/run/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted}
-	"$WROOT"/var/spool/cron "$WROOT"/var/lib/dpkg/info "$WROOT"/var/lib/systemd/linger)
+	"$WROOT"/var/spool/cron "$WROOT"/var/lib/dpkg/info "$WROOT"/var/lib/systemd/linger "$SSH_DIR")
 for h in "$WROOT"/home/*; do
 	[[ -d $h && ! -L $h ]] || continue
 	if [[ ${h##*/} == "$LIVE_USER" ]]; then
@@ -1553,15 +1556,20 @@ paths_diff() {
 		}' | sort
 }
 
-# files_now   "ÄNDERUNGSZEIT GRÖSSE PFAD" je Datei in WATCH, "d:RECHTE:BESITZER:GRUPPE - PFAD" je
-#   Ordner, sortiert. Es zählt die ctime: Die setzt nur der Kernel, touch kann sie nicht
-#   zurückstellen. Bei Ordnern zählen nur Rechte und Besitzer, ihr Inhalt steht in eigenen Zeilen.
-#   Zeilenumbrüche in Namen werden zu "?".
+# files_now [PFAD…]   "ÄNDERUNGSZEIT GRÖSSE PFAD" je Datei in WATCH (mit PFAD: darunter),
+#   "d:RECHTE:BESITZER:GRUPPE - PFAD" je Ordner, sortiert. Es zählt die ctime: Die setzt nur der
+#   Kernel, touch kann sie nicht zurückstellen. Bei Ordnern zählen nur Rechte und Besitzer, ihr Inhalt
+#   steht in eigenen Zeilen. Zeilenumbrüche in Namen werden zu "?". Nicht dabei ist der Stand des
+#   Journals, den das Hauptmenü in SSH_DIR merkt (tools_ssh_log_sync): journalctl schreibt ihn bei
+#   jedem Durchlauf neu, über eine Datei .#journal-cursor… daneben. Was so heißt, liest sonst nichts.
 files_now() {
 	local p
-	local -a prune=()
-	for p in "$SUDOERS" "${SUDOERS_D%/}" "${UNIT_PATHS[@]}"; do prune+=(-o -path "$p"); done
-	scan find "${WATCH[@]}" -xdev \( "${prune[@]:1}" \) -prune -o \( -type d -printf 'd:%m:%U:%G - %p\0' \) \
+	local -a prune=() roots=("${WATCH[@]}")
+	(($#)) && roots=("$@")
+	for p in "$SUDOERS" "${SUDOERS_D%/}" "${UNIT_PATHS[@]}" "$SSH_DIR/journal-cursor" "$SSH_DIR/.#journal-cursor*"; do
+		prune+=(-o -path "$p")
+	done
+	scan find "${roots[@]}" -xdev \( "${prune[@]:1}" \) -prune -o \( -type d -printf 'd:%m:%U:%G - %p\0' \) \
 		-o -printf '%C@ %s %p\0' 2>/dev/null | tr '\n\0' '?\n' | sort
 }
 
@@ -1599,6 +1607,65 @@ disable_nextroot() {
 		note "gesperrt: $NEXTROOT (jetzt $t)"
 	else
 		note "ließ sich nicht sperren: $NEXTROOT"
+	fi
+	return 0
+}
+
+# ssh_keys_changed   Hat sich unter SSH_DIR seit dem Freischalten etwas geändert (wie files_changed)?
+ssh_keys_changed() {
+	[[ -f $SNAP/files ]] || return 1
+	files_now "$SSH_DIR" | paths_diff Datei Ordner "$SNAP/files" |
+		awk -v d="$SSH_DIR" '{p = $0; sub(/^[^:]*: /, "", p)} p == d || index(p, d "/") == 1 {f = 1} END {exit !f}'
+}
+
+# ssh_keys_none   Sind die Schlüssel unter SSH_DIR schon gesperrt (disable_ssh_keys, auch in diesem
+#   Ende), und gilt seitdem keiner: Zustand "freigabe", authorized_keys und kandidaten leer, alles
+#   echte Dateien, keine Einhängung?
+ssh_keys_none() {
+	local f st=""
+	[[ -d $SSH_DIR && ! -L $SSH_DIR && -f $SSH_DIR/status && ! -L $SSH_DIR/status ]] || return 1
+	mountpoint -q -- "$SSH_DIR" 2>/dev/null && return 1
+	read -r st <"$SSH_DIR/status" 2>/dev/null
+	[[ $st == freigabe ]] || return 1
+	for f in "$SSH_DIR/authorized_keys" "$SSH_DIR/kandidaten"; do
+		[[ -f $f && ! -L $f && ! -s $f ]] || return 1
+	done
+	return 0
+}
+
+# disable_ssh_keys   Hat sich unter SSH_DIR seit dem Freischalten etwas geändert, gilt bis zum
+#   Neustart kein Schlüssel von LF-SSH mehr (#99, Regel 11), denn Leuchtfeuer sieht nicht, wer es
+#   geändert hat: Ein Schlüssel, der während der Freigabe in authorized_keys kam, gälte sonst ohne
+#   Bestätigung auf tty1, einen in kandidaten böte das nächste Einschalten von SSH an. SSH_DIR kommt
+#   in einen neuen Ordner SSH_DIR.lf-gesperrt.*, eine Einhängung dort löst es vorher. Danach steht
+#   SSH_DIR da wie nach dem Laden ohne Schlüssel, mit dem Zustand "freigabe" für tty1 und Werkzeuge >
+#   SSH (sshkeys_status_text). Nur der Stand des Journals kommt zurück, wenn er wie einer aussieht:
+#   Einen kaputten nähme journalctl nicht, und das Hauptmenü übernähme bis zum Neustart keine
+#   Anmeldung per SSH mehr ins Protokoll. Gelöscht wird nichts, residue meldet es bis zum Neustart
+#   (files_changed). off ruft es vor dem Beenden auf und nach jeder Runde des Beendens noch einmal:
+#   Was aus der Freigabe bis dahin noch lief, kann dort noch etwas geändert haben. Sind sie schon
+#   gesperrt und gilt seitdem keiner (ssh_keys_none), bleibt es dabei.
+disable_ssh_keys() {
+	local t="" old c="" re='^[a-z]=[0-9a-f]+(;[a-z]=[0-9a-f]+)*$'
+	ssh_keys_changed || return 0
+	ssh_keys_none && return 0
+	mountpoint -q -- "$SSH_DIR" 2>/dev/null && umount -R -l -- "$SSH_DIR" 2>/dev/null
+	if [[ -e $SSH_DIR || -L $SSH_DIR ]]; then
+		if ! t=$(mktemp -d -- "$SSH_DIR.lf-gesperrt.XXXXXX" 2>/dev/null) || ! mv -- "$SSH_DIR" "$t/" 2>/dev/null; then
+			note "ließ sich nicht sperren: SSH-Schlüssel unter $SSH_DIR"
+			return 0
+		fi
+	fi
+	old=$t/${SSH_DIR##*/}
+	if install -d -m 0755 -- "$SSH_DIR" && install -m 0644 /dev/null "$SSH_DIR/authorized_keys" &&
+		(umask 077 && : >"$SSH_DIR/kandidaten" && : >"$SSH_DIR/meldungen" && echo freigabe >"$SSH_DIR/status"); then
+		if [[ -n $t && -f $old/journal-cursor && ! -L $old/journal-cursor ]]; then
+			IFS= read -r -n 513 c <"$old/journal-cursor"
+			((${#c} <= 512)) && [[ $c =~ $re ]] && printf '%s\n' "$c" >"$SSH_DIR/journal-cursor" 2>/dev/null
+		fi
+		note "gesperrt: SSH-Schlüssel unter $SSH_DIR${t:+ (jetzt $t)}"
+	else
+		note "ließ sich nicht sperren: SSH-Schlüssel unter $SSH_DIR"
 	fi
 	return 0
 }
@@ -2609,6 +2676,21 @@ persist_now() {
 		tr '\n\0' '?\n' | sort
 }
 
+# hostkeys_mark   Mit offenem Speicher kann eine Freigabe die SSH-Hostschlüssel lesen, die dort
+#   gemerkten (config/ssh/hostkeys) und die dieses Starts in /etc/ssh, die das nächste Einschalten von
+#   SSH dort merkt (#99, Regel 11). Die Markierung $PERSIST/config/ssh/hostkeys-freigabe (/etc/lf/ssh)
+#   bringt den Assistenten dazu, beim nächsten Einschalten neue zu erzeugen oder, wenn schon welche
+#   gemerkt sind, dazu zu raten. Aufgerufen beim Freischalten, vor dem Bild des Speichers (so ist sie
+#   kein Rückstand, und wer sie während der Freigabe löscht, hinterlässt einen), und beim Ende, falls
+#   der Speicher erst während der Freigabe aufging. Eine vorhandene Markierung bleibt, wie sie ist.
+hostkeys_mark() {
+	local c=$PERSIST/config d=$PERSIST/config/ssh
+	persist_mounted || return 0
+	[[ -d $c && ! -L $c && ! -L $d ]] || return 0
+	[[ -e $d/hostkeys-freigabe || -L $d/hostkeys-freigabe ]] && return 0
+	(umask 077 && mkdir -p -- "$d" && date '+%F %R' >"$d/hostkeys-freigabe") 2>/dev/null || true
+}
+
 # persist_changed   Was sich auf dem Speicher seit dem Freischalten geändert hat: je Zeile eine Datei
 #   oder ein Ordner in PERSIST_DIRS. Ist er während der Freigabe ein- oder ausgehängt worden, ist
 #   sein Inhalt ungeprüft.
@@ -2659,6 +2741,7 @@ snapshot() {
 	creds_now >"$SNAP/creds"
 	efivars_now >"$SNAP/efivars"
 	if persist_mounted; then echo offen; else echo zu; fi >"$SNAP/persist-zustand"
+	hostkeys_mark
 	persist_now >"$SNAP/persist"
 	chmod 0600 "$SNAP"/*
 	# Für jeden lesbar nur, was status ohne root braucht (quick_residue, kept_unit): die Einheiten,
@@ -2907,12 +2990,14 @@ off() {
 	trace "Ende der Freigabe: Regel entfernt"
 	# Was jedes Programm lädt und was die Grundregel ausführt, vor allem anderen: Danach läuft keine
 	# Bibliothek aus ld.so.preload mehr mit und kein geändertes lf-aufgabe. Dann, wohin ein Neustart
-	# statt neu zu starten springen könnte.
+	# statt neu zu starten springen könnte. Dann die Schlüssel von LF-SSH, falls sich dort etwas
+	# geändert hat (nach dem Beenden noch einmal).
 	disable_preload
 	check_chain
 	disable_nextroot
 	kexec_unload
-	trace "Ende der Freigabe: Lader, Kette, soft-reboot und kexec geprüft"
+	disable_ssh_keys
+	trace "Ende der Freigabe: Lader, Kette, soft-reboot, kexec und SSH-Schlüssel geprüft"
 	stop_new_units
 	stop_new_at
 	disable_new_cron
@@ -2921,6 +3006,8 @@ off() {
 	stop_granted
 	# Was beim Beenden noch gestartet ist (etwa über OnSuccess= einer beendeten Einheit).
 	stop_new_units
+	# Was aus der Freigabe bis hierher noch lief, kann unter SSH_DIR noch etwas geändert haben.
+	disable_ssh_keys
 	menv_restore
 	if [[ -e $LINGER/$CLAUDE ]]; then loginctl disable-linger "$CLAUDE" 2>/dev/null || true; fi
 	# Hält logind die Sperre des Netzschalters noch (nach dem Beenden, vor der Prüfung des Rückstands:
@@ -2931,8 +3018,9 @@ off() {
 	# der Grundregel, das sich geändert haben kann. Gibt es eine Zeile aus lock_lines, bleibt die
 	# Grundregel bis zum Neustart gesperrt (die Meldung nennt jeden Grund, auch jede Einhängung), und
 	# ohne sie bleibt auch kein Dienst und kein Job der Grundregel stehen (kept_unit, kept_job): noch
-	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, dann neu prüfen. Sonst bleibt
-	# sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt, ohne ist sie wieder frei.
+	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, danach disable_ssh_keys, dann
+	# neu prüfen. Sonst bleibt sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt,
+	# ohne ist sie wieder frei.
 	r=$(end_residue)
 	l=$(lock_lines <<<"$r")
 	if [[ -n $l ]] && base_rule_file >/dev/null; then
@@ -2940,6 +3028,7 @@ off() {
 		stop_new_units
 		stop_root_in_claude
 		stop_granted
+		disable_ssh_keys
 		r=$(end_residue)
 	fi
 	# Mit Rückstand bleibt sie gesperrt. Hat etwas die Sperre aus dem ersten Schritt aufgehoben (etwa
@@ -2990,6 +3079,8 @@ off() {
 	if ((had)); then
 		install -d /run/lf
 		date +%s >"$LAST" && chmod 0644 "$LAST"
+		# Ging der Speicher erst während der Freigabe auf, konnte sie die Hostschlüssel auch lesen.
+		hostkeys_mark
 	fi
 	return 0
 }

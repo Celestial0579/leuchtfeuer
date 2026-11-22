@@ -73,10 +73,13 @@ jobs:
       # ins System legt, prüft selftest_owner. Echt prüft es selftest_netz.
       # Im Netz lauscht nichts außer SSH, rpcbind ist im Overlay maskiert. Echt prüft es selftest_lauscht.
       # Anmeldung: Ein leeres Passwort gilt nie, su wechselt für lf-claude zu keinem anderen Benutzer.
+      # SSH-Schlüssel von LF-SSH: nur vom geprüften Stick, nur lesend, jede Zeile geprüft, erst nach
+      # Bestätigung, mit Schlüssel kein Passwort. sshd -T mit lf.conf (selftest_ssh).
+      # LF-SSH im ISO: Partition 3 mit FAT und LIESMICH.txt, der MBR bleibt der von xorriso.
       # ptrace: ab dem Start gesperrt, auch für root (kernel.yama.ptrace_scope=3). Echt prüft es selftest_ptrace.
       - name: Schutz-Tests
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue xorriso mtools dosfstools openssh-server
           bash tests/unit-casefile.sh
           bash tests/unit-expert-confirm.sh
           bash tests/unit-resume-source.sh
@@ -114,6 +117,8 @@ jobs:
           bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-netz.sh
           bash tests/unit-ssh-aus.sh
+          bash tests/unit-ssh-schluessel.sh
+          bash tests/unit-lf-ssh-image.sh
           bash tests/unit-ptrace.sh
           bash tests/unit-hang.sh
           bash tests/unit-image-release.sh

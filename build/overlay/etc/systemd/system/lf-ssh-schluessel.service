@@ -1,0 +1,18 @@
+[Unit]
+# Eigene SSH-Schlüssel vom Stick (#99): liest authorized_keys von der Partition LF-SSH des
+# Startmediums, nur lesend, und prüft jede Zeile (rescue/lib/sshkeys.sh). Das geschieht bei jedem
+# Start, bevor sich jemand anmelden kann. Das Ergebnis liegt nur im RAM unter /run/lf/ssh. Es gilt
+# erst, wenn der Mensch auf tty1 SSH einschaltet und die Schlüssel bestätigt.
+Description=Leuchtfeuer: SSH-Schlüssel vom Stick lesen
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=systemd-user-sessions.service ssh.service ssh.socket lf-selftest.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/lf --ssh-schluessel
+
+[Install]
+WantedBy=multi-user.target

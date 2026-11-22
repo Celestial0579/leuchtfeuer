@@ -9,6 +9,7 @@ tools_menu() {
 			mem "Arbeitsspeicher kurz testen (memtester)" \
 			net "Netzwerk / WLAN verbinden (nmtui)" \
 			ssh "Fernzugriff per SSH ein/aus" \
+			sshneu "SSH-Hostschlüssel neu erzeugen" \
 			persist "Persistenter Speicher" \
 			freigabe "Claude-Freigabe (volles sudo, zeitlich begrenzt)" \
 			logs "Protokolle ansehen" \
@@ -20,6 +21,7 @@ tools_menu() {
 		mem) tools_mem ;;
 		net) nmtui ;;
 		ssh) tools_ssh ;;
+		sshneu) tools_ssh_newkeys ;;
 		persist) persist_menu ;;
 		freigabe) claude_freigabe_menu ;;
 		logs) tools_logs ;;
@@ -75,28 +77,149 @@ tools_ssh() {
 		return 0
 	fi
 	is_online || { ui_msg "SSH" "Keine Netzwerkverbindung."; return 0; }
-	local pw ips fps
-	# Die Hostschlüssel dieses Starts (lf-ssh-hostkeys.service). Fehlen sie noch, entstehen sie
-	# hier, nie aus dem Image (GHSA-72hw-w482-prv6).
-	run sudo ssh-keygen -A || { ui_msg "SSH" "Die SSH-Hostschlüssel ließen sich nicht erzeugen. SSH bleibt aus."; return 0; }
+	local pw='' ips fps how what
+	# Die Hostschlüssel dieses Starts (lf-ssh-hostkeys.service) oder, mit verschlüsseltem Speicher,
+	# die gemerkten. Fehlen sie noch, entstehen sie hier, nie aus dem Image (GHSA-72hw-w482-prv6).
+	tools_ssh_hostkeys || { ui_msg "SSH" "Die SSH-Hostschlüssel ließen sich nicht erzeugen. SSH bleibt aus."; return 0; }
 	fps=$(tools_ssh_fingerprints)
 	[[ -n $fps ]] || { ui_msg "SSH" "Die SSH-Hostschlüssel fehlen. SSH bleibt aus."; return 0; }
 	# Erst die Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt, frisch geladen und
 	# geprüft, dann das Passwort (GHSA-cmcp-h343-c4gj).
 	tools_ssh_sperre || return 0
-	pw=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' </dev/urandom | head -c 12)
-	echo "$(id -un):$pw" | sudo chpasswd
+	# Eigene Schlüssel von LF-SSH (#99): Gilt mindestens einer, gilt kein Passwort. Das Passwort des
+	# Live-Benutzers bleibt dann gesperrt (lf-passwort-sperre.service).
+	if sshkeys_confirm "$fps"; then
+		sshkeys_mode schluessel || { ui_msg "SSH" "SSH ließ sich nicht einrichten. SSH bleibt aus."; return 0; }
+		how="Anmeldung nur mit diesen Schlüsseln von LF-SSH, ein Passwort gilt nicht:\n${SSHKEYS_ACTIVE//$'\n'/\\n}"
+		what="nur Schlüssel von LF-SSH: ${SSHKEYS_ACTIVE//$'\n'/; }"
+	else
+		sshkeys_mode passwort || { ui_msg "SSH" "SSH ließ sich nicht einrichten. SSH bleibt aus."; return 0; }
+		pw=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' </dev/urandom | head -c 12)
+		echo "$(id -un):$pw" | sudo chpasswd
+		how="Passwort (nur für diese Sitzung): $pw"
+		what="Einmal-Passwort gesetzt"
+	fi
 	# ssh startet nur mit der Regel, die lf-claude den Weg zu sshd auf diesem Rechner sperrt
 	# (lf-claude-ssh-sperre.service, GHSA-cmcp-h343-c4gj). Scheitert der Start, gilt das Passwort nicht.
 	if ! run sudo systemctl start ssh; then
-		run sudo usermod -p '!' "$(id -un)"
-		log "SSH ließ sich nicht starten, das Einmal-Passwort ist wieder gesperrt"
-		ui_msg "SSH" "SSH ließ sich nicht starten. Das Einmal-Passwort gilt nicht.\n\nDetails: journalctl -u ssh -u lf-claude-ssh-sperre"
+		if [[ -n $pw ]]; then
+			run sudo usermod -p '!' "$(id -un)"
+			log "SSH ließ sich nicht starten, das Einmal-Passwort ist wieder gesperrt"
+			ui_msg "SSH" "SSH ließ sich nicht starten. Das Einmal-Passwort gilt nicht.\n\nDetails: journalctl -u ssh -u lf-claude-ssh-sperre"
+		else
+			log "SSH ließ sich nicht starten"
+			ui_msg "SSH" "SSH ließ sich nicht starten.\n\nDetails: journalctl -u ssh -u lf-claude-ssh-sperre"
+		fi
 		return 0
 	fi
+	log "SSH eingeschaltet ($what), Hostschlüssel: ${fps//$'\n'/, }"
 	ips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
-	log "SSH eingeschaltet (Einmal-Passwort gesetzt), Hostschlüssel: ${fps//$'\n'/, }"
-	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
+	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\n$how\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
+}
+
+# tools_ssh_hostkeys   Hostschlüssel für sshd (#99, Regel 9). Wie bisher bekommt jeder Start eigene
+#   (lf-ssh-hostkeys.service, GHSA-72hw-w482-prv6). Mit verschlüsseltem Speicher bleiben sie über
+#   Neustarts gleich: Beim ersten Einschalten legt der Assistent sie in $SSHKEYS_ETC/hostkeys ab
+#   (root, 0600), danach nimmt er sie wieder. Auf LF-SSH liegen sie nie, dort könnte sie jeder
+#   lesen. Konnte eine Claude-Freigabe sie lesen (Markierung von lf-freigabe), rät er, sie neu zu
+#   erzeugen.
+tools_ssh_hostkeys() {
+	local e=${LF_SSH_DIR:-/etc/ssh} d=$SSHKEYS_ETC/hostkeys t when
+	if ! persist_encrypted; then
+		run sudo ssh-keygen -A
+		return
+	fi
+	if sudo test -f "$SSHKEYS_ETC/hostkeys-freigabe"; then
+		# Noch keine gemerkt: Die dieses Starts kann die Freigabe gelesen haben, und neue kosten nichts.
+		if ! sudo test -d "$d"; then
+			tools_ssh_hostkeys_new
+			return
+		fi
+		when=$(sudo head -n 1 "$SSHKEYS_ETC/hostkeys-freigabe" 2>/dev/null | text_clean 20)
+		if ui_yesno "SSH-Hostschlüssel" "Während einer Claude-Freigabe${when:+ ($when)} war der Speicher offen. Claude hatte root und kann die privaten Hostschlüssel gelesen haben. Wer sie hat, kann sich gegenüber SSH-Clients als dieser Rechner ausgeben.\n\nJetzt neu erzeugen? Empfohlen. SSH-Clients, die schon verbunden waren, melden danach einen geänderten Hostschlüssel. Den alten Eintrag dort löschen (ssh-keygen -R ADRESSE)."; then
+			tools_ssh_hostkeys_new
+			return
+		fi
+	fi
+	for t in ed25519 ecdsa rsa; do
+		if ! sudo test -s "$d/ssh_host_${t}_key" || ! sudo test -s "$d/ssh_host_${t}_key.pub"; then continue; fi
+		run sudo install -m 0600 -o root -g root "$d/ssh_host_${t}_key" "$e/ssh_host_${t}_key" || return 1
+		run sudo install -m 0644 -o root -g root "$d/ssh_host_${t}_key.pub" "$e/ssh_host_${t}_key.pub" || return 1
+	done
+	run sudo ssh-keygen -A || return 1
+	tools_ssh_hostkeys_save
+}
+
+# tools_ssh_hostkeys_save   Legt die Hostschlüssel auf den verschlüsselten Speicher.
+tools_ssh_hostkeys_save() {
+	local e=${LF_SSH_DIR:-/etc/ssh} d=$SSHKEYS_ETC/hostkeys t
+	run sudo install -d -m 0700 -o root -g root "$SSHKEYS_ETC" "$d" || return 1
+	for t in ed25519 ecdsa rsa; do
+		sudo test -s "$e/ssh_host_${t}_key" || continue
+		run sudo install -m 0600 -o root -g root "$e/ssh_host_${t}_key" "$e/ssh_host_${t}_key.pub" "$d/" || return 1
+	done
+}
+
+# tools_ssh_hostkeys_new   Neue Hostschlüssel (Werkzeuge > SSH-Hostschlüssel neu erzeugen). Mit
+#   verschlüsseltem Speicher ersetzen sie die gemerkten, und die Markierung einer Freigabe fällt weg.
+tools_ssh_hostkeys_new() {
+	local e=${LF_SSH_DIR:-/etc/ssh}
+	run sudo sh -c 'rm -f -- "$1"/ssh_host_*_key "$1"/ssh_host_*_key.pub' _ "$e" || return 1
+	run sudo ssh-keygen -A || return 1
+	if persist_encrypted; then
+		run sudo rm -rf -- "$SSHKEYS_ETC/hostkeys" || return 1
+		tools_ssh_hostkeys_save || return 1
+		run sudo rm -f -- "$SSHKEYS_ETC/hostkeys-freigabe"
+	fi
+	log "SSH-Hostschlüssel neu erzeugt: $(tools_ssh_fingerprints | tr -s ' \n' ' ')"
+}
+
+# tools_ssh_newkeys   Menüpunkt: neue Hostschlüssel, nur solange SSH aus ist.
+tools_ssh_newkeys() {
+	local fps
+	if systemctl is-active -q ssh; then
+		ui_msg "SSH-Hostschlüssel" "SSH ist an. Erst ausschalten, dann neue Hostschlüssel erzeugen."
+		return 0
+	fi
+	ui_yesno "SSH-Hostschlüssel" "Neue Hostschlüssel erzeugen?\n\nSSH-Clients, die schon verbunden waren, melden danach einen geänderten Hostschlüssel. Den alten Eintrag dort löschen (ssh-keygen -R ADRESSE)." --defaultno || return 0
+	if tools_ssh_hostkeys_new && fps=$(tools_ssh_fingerprints) && [[ -n $fps ]]; then
+		ui_msg "SSH-Hostschlüssel" "Neue Hostschlüssel:\n${fps//$'\n'/\\n}"
+	else
+		ui_msg "SSH-Hostschlüssel" "Neue Hostschlüssel ließen sich nicht erzeugen. Siehe Protokoll."
+	fi
+}
+
+# tools_ssh_log_sync   Anmeldungen und Fehlversuche aus dem Journal von sshd ins Protokoll des
+#   Assistenten (#99, Regel 10). Mit LogLevel VERBOSE stehen dort Zeit, Adresse und Fingerabdruck.
+#   Der Cursor in $SSHKEYS_DIR sorgt dafür, dass jede Zeile einmal kommt. Das Hauptmenü ruft das
+#   bei jedem Durchlauf auf, auch wenn SSH schon aus ist: So fehlt nichts vom Ende. Das Ende einer
+#   Claude-Freigabe zählt ihn nicht zum Rückstand (files_now in lf-freigabe).
+tools_ssh_log_sync() {
+	local line dir=${SSHKEYS_DIR:-/run/lf/ssh}
+	while IFS= read -r line; do
+		log "sshd: $line"
+	done < <(sudo journalctl -q -u ssh.service -o short-iso --no-pager --cursor-file="$dir/journal-cursor" 2>/dev/null |
+		grep -E 'Accepted |Failed |Invalid user|authentication failure|Connection closed by|Disconnected from|Too many authentication|maximum authentication' |
+		text_clean 300)
+}
+
+# tools_ssh_hinweis   Eine Zeile für das Hauptmenü, solange SSH an ist (#99, Regel 10): die offenen
+#   Sitzungen mit Adresse.
+tools_ssh_hinweis() {
+	local id host n=0 list=""
+	systemctl is-active -q ssh || return 0
+	for id in $(tools_ssh_sessions); do
+		host=$(loginctl show-session "$id" -p RemoteHost --value 2>/dev/null | text_clean 40)
+		list+="${list:+, }${host:-?}"
+		n=$((n + 1))
+	done
+	if ((n == 1)); then
+		echo "SSH ist an: 1 offene Sitzung ($list)."
+	elif ((n)); then
+		echo "SSH ist an: $n offene Sitzungen ($list)."
+	else
+		echo "SSH ist an, keine offene Sitzung."
+	fi
 }
 
 # Die Prozesse von sshd: der wartende, der je Verbindung und der bei der Anmeldung.
@@ -113,7 +236,9 @@ tools_ssh_off() {
 	local re=$TOOLS_SSH_RE id n=0 sessions procs cg msg="SSH ist aus."
 	local -a left=()
 	if run sudo usermod -p '!' "$(id -un)"; then
-		msg+=" Das Einmal-Passwort gilt nicht mehr."
+		# Mit Schlüsseln von LF-SSH galt kein Passwort (#99): Dann nennt der Dialog keins.
+		grep -qsx 'AuthenticationMethods publickey' "${SSHKEYS_MODE_CONF:-/etc/ssh/sshd_config.d/00-lf-anmeldung.conf}" ||
+			msg+=" Das Einmal-Passwort gilt nicht mehr."
 	else
 		left+=("Das Einmal-Passwort ließ sich nicht sperren.")
 	fi

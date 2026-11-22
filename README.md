@@ -25,6 +25,8 @@ Die ISO kommt **im DD-Modus** auf einen USB-Stick. Empfohlen sind mindestens 8 G
 
 Der Stick startet per UEFI (auch mit Secure Boot) und per Legacy-BIOS.
 
+Nach dem Beschreiben zeigt der Stick ein kleines Laufwerk `LF-SSH`. Dort kannst du eine Datei `authorized_keys` mit deinen öffentlichen SSH-Schlüsseln ablegen ([Anleitung, Fernzugriff](docs/anleitung.md#fernzugriff)).
+
 Bedienung
 ---------
 
@@ -52,6 +54,7 @@ Diese Schutzregeln gelten immer:
 - Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung. Auch die Ausgabe von Werkzeugen wie fsck erreicht Bildschirm und Protokoll ohne Steuerzeichen.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
 - Beim Umzug in eine VM verbindet sich ssh nur mit dem Schlüssel des Knotens, den du über seinen Fingerabdruck bestätigt hast. Zugangsdaten speichert der Assistent nicht. Geschrieben wird nur in die Volumes einer neuen VM, deren ID du abtippst. Die Daten laufen über Unix-Sockets, kein Netzport, an dem ein anderer Benutzer in die Volumes schreiben könnte.
+- SSH ist nach dem Start aus. Eigene Schlüssel liest Leuchtfeuer nur lesend von der Partition `LF-SSH` des Sticks, von dem gestartet wurde, und sie gelten erst, wenn du sie beim Einschalten bestätigst. Gilt ein Schlüssel, gilt kein Passwort.
 - Der persistente Speicher ist nur die Partition `LF-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `lf.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 - Kein Programm kann sich per ptrace an ein anderes hängen, auch root nicht: ptrace ist ab dem Start gesperrt (`kernel.yama.ptrace_scope=3`).
