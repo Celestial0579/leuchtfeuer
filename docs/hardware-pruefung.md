@@ -144,6 +144,7 @@ Nur mit Internet und eigenem Konto.
    - In der App läuft Claude Code als `lf-claude`: kein sudo außer `lf-lesen` und `lf-aufgabe`. Schreibende Schritte gehen nur über die Werkzeuge bzw. den Assistenten, die Rückfragen aus Schritt 2 kommen auch hier.
    - Grafik mit GPU: `ls -l /dev/dri` und in der App flüssiges Scrollen. Ohne GPU-Zugriff (Gruppe `render`) fällt sie auf Software-Darstellung zurück.
    - Auf tty2 als Live-Benutzer: `ls -l /run/lf/wayland` zeigt nur den Socket von cage, Gruppe `lf-claude`.
+   - Mit gesperrtem ptrace (#85, `sysctl kernel.yama.ptrace_scope` zeigt 3) läuft die App wie vorher.
 
 9 Selbsttest auf echter Hardware
 --------------------------------
@@ -152,7 +153,7 @@ Nur mit Internet und eigenem Konto.
 sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
-Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`. Die Datei gehört ins Issue.
+Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor steht `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`. Die Datei gehört ins Issue.
 
 10 SSH
 ------

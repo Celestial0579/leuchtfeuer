@@ -54,6 +54,7 @@ Diese Schutzregeln gelten immer:
 - Beim Umzug in eine VM verbindet sich ssh nur mit dem Schlüssel des Knotens, den du über seinen Fingerabdruck bestätigt hast. Zugangsdaten speichert der Assistent nicht. Geschrieben wird nur in die Volumes einer neuen VM, deren ID du abtippst. Die Daten laufen über Unix-Sockets, kein Netzport, an dem ein anderer Benutzer in die Volumes schreiben könnte.
 - Der persistente Speicher ist nur die Partition `LF-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `lf.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
+- Kein Programm kann sich per ptrace an ein anderes hängen, auch root nicht: ptrace ist ab dem Start gesperrt (`kernel.yama.ptrace_scope=3`).
 
 Was ist drin
 ------------

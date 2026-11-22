@@ -79,6 +79,7 @@ selftest() {
 	selftest_netz || ok=0
 	selftest_lauscht || ok=0
 	selftest_ssh_lokal || ok=0
+	selftest_ptrace || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -463,7 +464,7 @@ selftest_owner() {
 	local bad
 	bad=$(find /usr/local/lib/lf /usr/local/share/lf /usr/local/bin /etc/claude-code /etc/sudoers.d \
 		/etc/systemd/system /etc/systemd/journald.conf.d /etc/udev/rules.d /etc/initramfs-tools \
-		/etc/ssh/sshd_config.d /etc/skel /etc/NetworkManager/conf.d \
+		/etc/ssh/sshd_config.d /etc/skel /etc/NetworkManager/conf.d /etc/sysctl.d \
 		/usr/lib/systemd/system /usr/lib/systemd/system.conf.d \
 		\( ! -user root -o -perm /022 \) ! -type l -print 2>/dev/null | head -n 5)
 	if [[ -n $bad ]]; then
@@ -622,6 +623,19 @@ selftest_ssh_lokal_regel() {
 selftest_ssh_lokal_treffer() {
 	nft -j list chain inet lf_claude_ssh ausgang 2>/dev/null |
 		jq -er '[.nftables[] | .rule? // empty | select(.comment == "lf-claude-ssh") | .expr[] | .counter? // empty | .packets] | if length == 1 then .[0] else empty end'
+}
+
+# selftest_ptrace   ptrace ist gesperrt (#85): kernel.yama.ptrace_scope ist 3. Den Wert setzt
+#   build/overlay/etc/sysctl.d/90-lf-ptrace.conf beim Start, bis zum nächsten Start lässt er sich
+#   nicht mehr senken, auch nicht von root. LF_PTRACE_SCOPE nennt für Tests eine andere Datei.
+selftest_ptrace() {
+	local f=${LF_PTRACE_SCOPE:-/proc/sys/kernel/yama/ptrace_scope} v=
+	[[ -r $f ]] && read -r v <"$f"
+	if [[ $v != 3 ]]; then
+		echo "LF-SELFTEST: ptrace: kernel.yama.ptrace_scope ist ${v:-nicht lesbar} statt 3"
+		return 1
+	fi
+	echo "LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)"
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
