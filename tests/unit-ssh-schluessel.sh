@@ -5,7 +5,7 @@
 #   Zeilenenden von Windows, BOM, Kommentare nur gefiltert, private Schlüssel nie.
 # - sshkeys_load: nur vom geprüften Startmedium, nur eine Partition LF-SSH mit FAT, nie eingehängt:
 #   root kopiert nur ihre Bytes, höchstens so viele, wie LF-SSH im ISO groß ist, und mtools liest
-#   daraus als nobody eine Datei bis 64 KiB (#116).
+#   daraus als nobody eine Datei bis 64 KiB (#116). Die Anleitung nennt die Grenze.
 # - Bestätigen beim Einschalten (alle zusammen oder je neuem Schlüssel), restrict,pty, mit Schlüssel
 #   kein Passwort, ohne kein Schlüssel.
 # - Hostschlüssel mit verschlüsseltem Speicher und die Markierung nach einer Freigabe (lf-freigabe).
@@ -524,6 +524,7 @@ unset -f setpriv chown head mount umount
 check "jeder Zustand hat einen Satz für tty1 und den Selbsttest" '( for s in leer keine-datei keine-partition kein-medium mehrdeutig zwei-partitionen kein-fat partition-zu-gross zwei-dateien zu-gross fehler; do [[ -n $(sshkeys_status_text "$s") ]] || exit 1; done ) && [[ $(sshkeys_status_text ok 1) == "1 Schlüssel von LF-SSH geprüft." && $(sshkeys_status_text ok 3) == "3 Schlüssel von LF-SSH geprüft." ]]'
 check "zu große Partition: ein eigener Satz mit der Größe im ISO" '[[ $(sshkeys_status_text partition-zu-gross) == "Die Partition LF-SSH ist größer als im ISO ($((LFSSH_KIB / 1024)) MiB). Sie gilt nicht. Den Stick neu beschreiben, siehe Anleitung." ]]'
 check "höchstens so groß wie LF-SSH im ISO (LFSSH_KIB in build/lf-ssh/partition.sh), mtools im Image" '((${SSHKEYS_MAX_PART_BYTES:-0} == LFSSH_KIB * 1024)) && grep -qx mtools build/packages.list'
+check "die Anleitung nennt die Grenze mit derselben Größe" 'grep -qF "oder ist die Partition größer als im ISO ($((LFSSH_KIB / 1024)) MiB), liest er keine Schlüssel und sagt das." docs/anleitung.md'
 
 echo "Hinweis beim Start (sshkeys_notice):"
 notice() {
