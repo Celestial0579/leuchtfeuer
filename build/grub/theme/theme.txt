@@ -1,5 +1,7 @@
 # Leuchtfeuer – GRUB-Theme
-# Farben von firestrike.de: Grund #141715, Text #E8EBE7, Stahl hell #B4C6D1, Funke #E8A33D, Glut #AB5019
+# Farben von firestrike.de: Grund #141715, Text #E8EBE7, Stahl hell #B4C6D1, Funke #E8A33D, Glut #DB7745
+# Glut in der dunklen Fassung, weil der Grund dunkel ist. Die Auswahl hat Grund #141715 als Schrift auf
+# Glut (5,79:1), die Fläche dazu schreibt build.sh als select_*.png.
 
 desktop-color: "#141715"
 title-text: "Leuchtfeuer"
@@ -45,7 +47,7 @@ terminal-font: "@MENU_FONT@"
 	height = 20
 	font = "@SMALL_FONT@"
 	text_color = "#5A605B"
-	fg_color = "#AB5019"
+	fg_color = "#DB7745"
 	bg_color = "#212B33"
 	border_color = "#33414B"
 	text = "@TIMEOUT_NOTIFICATION_LONG@"
