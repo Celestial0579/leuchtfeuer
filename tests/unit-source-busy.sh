@@ -5,7 +5,8 @@
 # Jobliste des Assistenten, denn zwischen zwei Kopierschritten hat niemand die Ziel-Disk offen;
 # offene Schreibzugriffe und schreibbar eingehängte Dateisysteme fangen den Rest ab. Für retten,
 # domain, fortsetzen und pruefen-rettung ist auch das Loop-Gerät einer Datei auf dem Ziel keine
-# Quelle, etwa des Images eines Rettungsfalls (rescue_source_ok, #91).
+# Quelle, etwa des Images eines Rettungsfalls (rescue_source_ok, #91). Die Suche nach offenen
+# Schreibzugriffen liest nur die Verknüpfungen in /proc, mit einer Grenze von 10 s (#95).
 #
 # Hier wird nichts eingehängt: Die "Disk" sind gewöhnliche Dateien, lsblk, disk_of, boot_disk,
 # target_disk und fail sind Attrappen. Ein losgelöster sleep hält eine Datei offen wie dd.
@@ -28,8 +29,15 @@ sed -n '/^tmux_size() {/,/^}/p; /^tmux_start() {/,/^}/p; /^tmux_run_writing() {/
 . "$T/aufgabe-fns.sh"
 LF_JOBS="$T/jobs"
 findmnt() { cat "$T/mounts" 2>/dev/null; }
-: >"$T/sdz" && : >"$T/sdz1" && : >"$T/sdz2"
-lsblk() { printf '%s\n' "$T/sdz" "$T/sdz1" "$T/sdz2"; }
+: >"$T/sdz" && : >"$T/sdz1" && : >"$T/sdz2" && : >"$T/sdz10" && : >"$T/dm-0" && ln -s "$T/dm-0" "$T/mapper-x"
+# Wie das echte lsblk: KNAME nennt ein dm-Gerät beim Kernelnamen (dm-0), NAME unter /dev/mapper.
+lsblk() {
+	if [[ $* == *KNAME* ]]; then
+		printf '%s\n' "$T/sdz" "$T/sdz1" "$T/sdz2" "$T/dm-0"
+	else
+		printf '%s\n' "$T/sdz" "$T/sdz1" "$T/sdz2" "$T/mapper-x"
+	fi
+}
 disk_of() { echo "$1"; }
 boot_disk() { echo /dev/sdy; }
 target_disk() { echo /dev/sdx; }
@@ -46,6 +54,44 @@ kill "$WRITER" "$READER" 2>/dev/null
 wait "$WRITER" "$READER" 2>/dev/null
 check "source_ok lehnt nbd (Overlay des Klons) und zram ab" '[[ $( (source_ok /dev/nbd0); echo "rc=$?") == *"Hilfsgerät"*"rc=2" && $( (source_ok /dev/zram0); echo "rc=$?") == *"rc=2" ]]'
 check "eine Disk ohne Schreibzugriff bleibt Quelle" '[[ $( (source_ok "$T/sdz"); echo "rc=$?") == "rc=0" ]]'
+
+echo "Suche ohne stat auf offene Dateien (#95):"
+# Zum Schreiben offen über eine Verknüpfung wie /dev/mapper/x: /proc zeigt den Kernelnamen.
+(exec 3>>"$T/mapper-x" && exec sleep 300) >/dev/null 2>&1 &
+DM=$!
+sleep 0.3
+check "über /dev/mapper/… zum Schreiben offen: erkannt am Kernelnamen" 'disk_written "$T/sdz"'
+kill "$DM" 2>/dev/null
+wait "$DM" 2>/dev/null
+# Wie ein Geräteknoten, den udev neu anlegt: Die Verknüpfung zeigt auf den alten mit "(deleted)".
+(exec 3>>"$T/sdz1" && exec sleep 300) >/dev/null 2>&1 &
+NEU=$!
+sleep 0.3
+rm "$T/sdz1" && : >"$T/sdz1"
+check "gelöscht und neu angelegt, weiter zum Schreiben offen: erkannt" 'disk_written "$T/sdz"'
+kill "$NEU" 2>/dev/null
+wait "$NEU" 2>/dev/null
+# Ein Gerät, dessen Name mit dem einer Partition anfängt, zählt nicht für sie.
+(exec 3>>"$T/sdz10" && exec sleep 300) >/dev/null 2>&1 &
+ZEHN=$!
+sleep 0.3
+check "zum Schreiben offen ist nur sdz10, nicht sdz1: keine Schreib-Disk (Rückgabe 1)" 'disk_written "$T/sdz"; [[ $? == 1 ]]'
+kill "$ZEHN" 2>/dev/null
+wait "$ZEHN" 2>/dev/null
+# Eine Suche, die nicht zurückkommt, etwa an einem FUSE-Dateisystem, das nicht mehr antwortet: hier ein
+# find, das nur schläft. timeout beendet es nach 10 s.
+mkdir -p "$T/haengt" && printf '#!/bin/sh\nexec sleep 60\n' >"$T/haengt/find" && chmod +x "$T/haengt/find"
+s=$SECONDS
+(
+	export PATH="$T/haengt:$PATH"
+	disk_written "$T/sdz"
+)
+rc=$?
+check "kommt die Suche nicht zurück: nach 10 s Rückgabe 2, nicht prüfbar" '((rc == 2 && SECONDS - s <= 15))'
+# Ein find, das nichts ausgibt: Dann sah die Suche gar nichts, auch nicht sich selbst.
+mkdir -p "$T/stumm" && printf '#!/bin/sh\nexit 1\n' >"$T/stumm/find" && chmod +x "$T/stumm/find"
+check "sieht die Suche gar nichts: source_ok lehnt ab, mit eigener Meldung" '[[ $( (export PATH="$T/stumm:$PATH"; source_ok "$T/sdz"); echo "rc=$?") == *"lässt sich nicht prüfen"*"rc=2" ]]'
+check "disk_written liest nur die Verknüpfungen, mit Grenze, und vergleicht mit KNAME, ohne -ef" 'b=$(sed -n "/^disk_written() {$/,/^}$/p" rescue/bin/lf-aufgabe); grep -qF "timeout -s KILL 10 find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -printf" <<<"$b" && grep -qF "lsblk -lnpo KNAME" <<<"$b" && ! grep -qF -- "-ef" <<<"$b"'
 
 echo "Jobliste des Assistenten:"
 # Ein Klon zwischen zwei Schritten: Sein Prozess lebt, aber niemand hat die Ziel-Disk offen.
