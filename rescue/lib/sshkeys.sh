@@ -9,8 +9,11 @@
 #     jemand anmelden kann, und nur vom geprüften Startmedium: von der Disk, die lf_medium gewählt
 #     hat (LF_BOOT_DISKS=1), und nur, wenn dort genau eine Partition LF-SSH liegt. Von fremden Disks
 #     und Sticks nie.
-#   - LF-SSH wird nur lesend eingehängt (ro,nodev,nosuid,noexec). Gelesen wird nur diese eine Datei,
-#     höchstens 64 KiB, dann wird LF-SSH gleich wieder ausgehängt. Leuchtfeuer schreibt nie auf
+#   - LF-SSH wird nie eingehängt: Das FAT darauf kann jeder ändern, der den Stick in der Hand hat,
+#     darum liest es weder der Kernel noch ein Programm als root. root kopiert nur die Bytes der
+#     Partition in eine Datei im RAM, höchstens so viele, wie LF-SSH im ISO groß ist (eine größere
+#     gilt nicht). Daraus liest mtools als nobody ohne Gruppen und Capabilities, mit no_new_privs
+#     (sshkeys_fat), nur diese eine Datei, höchstens 64 KiB (#116). Leuchtfeuer schreibt nie auf
 #     LF-SSH und führt von dort nie etwas aus.
 #   - Jede Zeile wird geprüft (sshkeys_check). Was nicht passt, gilt nicht, und tty1 sagt, welche
 #     Zeile es war und warum. Aus der Datei steht dort nie mehr als ein gefilterter Kommentar.
@@ -25,7 +28,12 @@ SSHKEYS_MAX_BYTES=65536
 SSHKEYS_MAX_KEYS=20
 SSHKEYS_MAX_MSGS=30
 SSHKEYS_COMMENT_WIDTH=40
-SSHKEYS_MOUNT_OPTS="ro,nodev,nosuid,noexec"
+# So groß ist LF-SSH im ISO (LFSSH_KIB in build/lf-ssh/partition.sh, tests/unit-ssh-schluessel.sh
+# vergleicht beide). Mehr kopiert sshkeys_image nie.
+SSHKEYS_MAX_PART_BYTES=$((4096 * 1024))
+# Als wer mtools das FAT von LF-SSH liest (sshkeys_fat).
+SSHKEYS_READER=nobody
+SSHKEYS_READER_GROUP=nogroup
 # Mit verschlüsseltem Speicher: bestätigte Fingerabdrücke und die Hostschlüssel (tools_ssh_hostkeys).
 # /etc/lf ist dann /persist/config. Der Ordner gehört root, wie /etc/lf/wifi.
 SSHKEYS_ETC=${SSHKEYS_ETC:-/etc/lf/ssh}
@@ -172,14 +180,14 @@ sshkeys_check() {
 	return 0
 }
 
-# sshkeys_private_files ORDNER   Namen im obersten Ordner von LF-SSH, die nach einem privaten
-#   Schlüssel aussehen: id_… ohne .pub am Ende, *.ppk von PuTTY. Gelesen wird keine dieser Dateien.
-#   Auf FAT ist die Schreibweise beliebig.
+# sshkeys_private_files   Von den Namen im obersten Ordner von LF-SSH (Standardeingabe, wie von
+#   sshkeys_names) die, die nach einem privaten Schlüssel aussehen: id_… ohne .pub am Ende, *.ppk von
+#   PuTTY. Ordner (mit / am Ende) zählen nicht. Gelesen wird keine dieser Dateien. Auf FAT ist die
+#   Schreibweise beliebig.
 sshkeys_private_files() {
-	local f b
-	for f in "$1"/*; do
-		[[ -f $f ]] || continue
-		b=${f##*/}
+	local b
+	while IFS= read -r b; do
+		[[ -n $b && $b != */ ]] || continue
 		case ${b,,} in
 		*.pub) ;;
 		id_* | *.ppk) printf '%s\n' "$b" ;;
@@ -197,34 +205,81 @@ sshkeys_partitions() {
 # sshkeys_status ZUSTAND [ZAHL]   Hält fest, wie das Laden ausging (sshkeys_status_text).
 sshkeys_status() { printf '%s\n' "$*" >"$SSHKEYS_DIR/status"; }
 
-# sshkeys_take ORDNER   Mit eingehängtem LF-SSH: kopiert die eine Datei nach $SSHKEYS_DIR/eingang
-#   (Zustand "gelesen") und meldet Dateien, die nach einem privaten Schlüssel aussehen.
+# sshkeys_fat BEFEHL…   Ein Befehl von mtools als SSHKEYS_READER: ohne Gruppen, Capabilities und die
+#   Umgebung des Aufrufs (HOME ist dann das von nobody, keine .mtoolsrc), mit no_new_privs und
+#   höchstens 20 Sekunden lang. So liest kein Programm als root das FAT von LF-SSH (#116).
+sshkeys_fat() {
+	setpriv --reuid="$SSHKEYS_READER" --regid="$SSHKEYS_READER_GROUP" --clear-groups --no-new-privs \
+		--inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20 "$@"
+}
+
+# sshkeys_names ABBILD   Die Namen im obersten Ordner des FAT in ABBILD, je Zeile einer, auch die
+#   versteckten, Ordner mit / am Ende (mdir -a -b). Status 1, wenn mtools es nicht lesen kann.
+sshkeys_names() {
+	local out
+	out=$(sshkeys_fat mdir -a -b -i "$1" ::/) || return 1
+	sed -n 's|^::/||p' <<<"$out"
+}
+
+# sshkeys_take ABBILD   Aus dem FAT in ABBILD (der Kopie von LF-SSH, sshkeys_image): kopiert die eine
+#   Datei nach $SSHKEYS_DIR/eingang (Zustand "gelesen") und meldet Dateien, die nach einem privaten
+#   Schlüssel aussehen. Auf FAT ist die Schreibweise beliebig, versteckte Dateien zählen mit.
 sshkeys_take() {
-	local f b size
-	local -a files=()
-	for f in "$1/authorized_keys" "$1/authorized_keys.txt"; do
-		[[ -f $f && ! -L $f ]] && files+=("$f")
+	local names n b size
+	local -a files=() rc=()
+	rm -f -- "$SSHKEYS_DIR/eingang"
+	if ! names=$(sshkeys_names "$1"); then
+		sshkeys_status fehler
+		return 0
+	fi
+	for n in authorized_keys authorized_keys.txt; do
+		while IFS= read -r b; do
+			if [[ ${b,,} == "$n" ]]; then files+=("$n"); fi
+		done <<<"$names"
 	done
 	while IFS= read -r b; do
 		sshkeys_msg "$SSHKEYS_DIR/meldungen" "Auf LF-SSH liegt $b, wohl ein privater Schlüssel. Er wird nie verwendet. Ihn dort löschen und ein neues Schlüsselpaar erzeugen: Er lag ungeschützt auf dem Stick."
-	done < <(sshkeys_private_files "$1" | text_clean 40)
+	done < <(sshkeys_private_files <<<"$names" | text_clean 40)
 	case ${#files[@]} in
 	0) sshkeys_status keine-datei; return 0 ;;
-	2) sshkeys_status zwei-dateien; return 0 ;;
+	1) ;;
+	*) sshkeys_status zwei-dateien; return 0 ;;
 	esac
-	if ! size=$(stat -c %s -- "${files[0]}"); then
+	# Ein Byte mehr als erlaubt: Daran zeigt sich, dass die Datei zu groß ist. Dann endet mcopy
+	# vorzeitig, weil head nicht weiterliest.
+	sshkeys_fat mcopy -n -i "$1" "::/${files[0]}" - | head -c "$((SSHKEYS_MAX_BYTES + 1))" >"$SSHKEYS_DIR/eingang"
+	rc=("${PIPESTATUS[@]}")
+	if ((rc[1])) || ! size=$(stat -c %s -- "$SSHKEYS_DIR/eingang"); then
 		sshkeys_status fehler
-		return 0
-	fi
-	if ((size > SSHKEYS_MAX_BYTES)); then
+	elif ((size > SSHKEYS_MAX_BYTES)); then
 		sshkeys_status zu-gross
+	elif ((rc[0])); then
+		sshkeys_status fehler
+	else
+		sshkeys_status gelesen
 		return 0
 	fi
-	if head -c "$SSHKEYS_MAX_BYTES" -- "${files[0]}" >"$SSHKEYS_DIR/eingang"; then
-		sshkeys_status gelesen
-	else
-		sshkeys_status fehler
+	rm -f -- "$SSHKEYS_DIR/eingang"
+	return 0
+}
+
+# sshkeys_image PARTITION   Kopiert die Bytes der PARTITION in eine Datei unter $SSHKEYS_DIR, die nur
+#   SSHKEYS_READER lesen kann, in einem Ordner, den nur root auflistet, und nennt sie. Mehr als
+#   SSHKEYS_MAX_PART_BYTES und ein Byte liest es nie: Ist die Partition größer, Status 2 (sie gilt
+#   nicht). Status 1, wenn das Kopieren scheitert. Den Ordner (lesen.*) räumt sshkeys_load ab.
+sshkeys_image() {
+	local d f size
+	if ! d=$(mktemp -d "$SSHKEYS_DIR/lesen.XXXXXX") || ! chmod 0711 "$d" || ! f=$(mktemp "$d/XXXXXXXXXX"); then
+		return 1
 	fi
+	if ! head -c "$((SSHKEYS_MAX_PART_BYTES + 1))" -- "$1" >"$f" || ! size=$(stat -c %s -- "$f"); then
+		return 1
+	fi
+	((size <= SSHKEYS_MAX_PART_BYTES)) || return 2
+	if ! chown -- "$SSHKEYS_READER:$SSHKEYS_READER_GROUP" "$f" || ! chmod 0400 "$f"; then
+		return 1
+	fi
+	printf '%s\n' "$f"
 }
 
 # sshkeys_load   Beim Start, als root (lf --ssh-schluessel aus lf-ssh-schluessel.service). Legt in
@@ -232,13 +287,15 @@ sshkeys_take() {
 #   authorized_keys. Status 1 nur, wenn der Ordner sich nicht anlegen lässt. In einer Subshell, damit
 #   die umask bleibt, wo sie hingehört.
 sshkeys_load() (
-	local bd n part fs label st mnt=$SSHKEYS_DIR/lf-ssh
+	local bd n part fs label st img rc
 	local -a parts=()
 	# Der Elternordner (/run/lf) entsteht hier, wenn der Assistent noch nicht lief: lesbar für alle,
 	# denn sshd liest authorized_keys als der Benutzer, der sich anmeldet.
 	install -d -m 0755 "${SSHKEYS_DIR%/*}" "$SSHKEYS_DIR" || return 1
 	umask 077
 	rm -f -- "$SSHKEYS_DIR/status" "$SSHKEYS_DIR/eingang"
+	# Reste eines Laufs, der abbrach (sshkeys_image)
+	rm -rf -- "$SSHKEYS_DIR"/lesen.*
 	: >"$SSHKEYS_DIR/kandidaten"
 	: >"$SSHKEYS_DIR/meldungen"
 	install -m 0644 /dev/null "$SSHKEYS_DIR/authorized_keys"
@@ -263,18 +320,14 @@ sshkeys_load() (
 		sshkeys_status kein-fat
 		return 0
 	fi
-	if ! install -d -m 0700 "$mnt" || ! mount -t vfat -o "$SSHKEYS_MOUNT_OPTS,uid=0,gid=0,umask=077" "$part" "$mnt"; then
-		sshkeys_status fehler
-		rmdir "$mnt" 2>/dev/null
-		return 0
-	fi
-	sshkeys_take "$mnt"
-	if ! umount "$mnt"; then
-		sshkeys_status fehler
-		rm -f -- "$SSHKEYS_DIR/eingang"
-		return 0
-	fi
-	rmdir "$mnt" 2>/dev/null
+	img=$(sshkeys_image "$part")
+	rc=$?
+	case $rc in
+	0) sshkeys_take "$img" ;;
+	2) sshkeys_status partition-zu-gross ;;
+	*) sshkeys_status fehler ;;
+	esac
+	rm -rf -- "$SSHKEYS_DIR"/lesen.*
 	st=$(<"$SSHKEYS_DIR/status")
 	[[ $st == gelesen ]] || return 0
 	sshkeys_check "$SSHKEYS_DIR/eingang" "$SSHKEYS_DIR/kandidaten" "$SSHKEYS_DIR/meldungen"
@@ -295,6 +348,7 @@ sshkeys_status_text() {
 	mehrdeutig) echo "Beim Start trug mehr als eine Disk die Kennung dieses Sticks. Schlüssel von LF-SSH gelten dann nicht. Fremde Disks und Sticks abziehen und neu starten." ;;
 	zwei-partitionen) echo "Auf dem Stick liegen mehrere Partitionen LF-SSH. Es gilt keine." ;;
 	kein-fat) echo "Die Partition LF-SSH trägt kein FAT-Dateisystem mit dem Namen LF-SSH. Sie gilt nicht." ;;
+	partition-zu-gross) echo "Die Partition LF-SSH ist größer als im ISO ($((SSHKEYS_MAX_PART_BYTES / 1048576)) MiB). Sie gilt nicht. Den Stick neu beschreiben, siehe Anleitung." ;;
 	zwei-dateien) echo "Auf LF-SSH liegen authorized_keys und authorized_keys.txt. Es gilt keine der beiden: eine davon löschen." ;;
 	zu-gross) echo "authorized_keys auf LF-SSH ist größer als 64 KiB und gilt nicht." ;;
 	freigabe) echo "Während einer Claude-Freigabe hat sich an den geprüften Schlüsseln von LF-SSH etwas geändert. Bis zum Neustart gilt darum keiner davon, SSH geht nur mit dem Einmal-Passwort." ;;

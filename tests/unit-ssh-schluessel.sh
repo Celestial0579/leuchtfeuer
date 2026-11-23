@@ -3,8 +3,9 @@
 #
 # - sshkeys_check: jede Regel für eine Zeile (Typ, Bits, Optionen, Base64, Doppelte, Obergrenzen),
 #   Zeilenenden von Windows, BOM, Kommentare nur gefiltert, private Schlüssel nie.
-# - sshkeys_load: nur vom geprüften Startmedium, nur eine Partition LF-SSH mit FAT, nur lesend
-#   eingehängt und gleich wieder ausgehängt, eine Datei bis 64 KiB.
+# - sshkeys_load: nur vom geprüften Startmedium, nur eine Partition LF-SSH mit FAT, nie eingehängt:
+#   root kopiert nur ihre Bytes, höchstens so viele, wie LF-SSH im ISO groß ist, und mtools liest
+#   daraus als nobody eine Datei bis 64 KiB (#116).
 # - Bestätigen beim Einschalten (alle zusammen oder je neuem Schlüssel), restrict,pty, mit Schlüssel
 #   kein Passwort, ohne kein Schlüssel.
 # - Hostschlüssel mit verschlüsseltem Speicher und die Markierung nach einer Freigabe (lf-freigabe).
@@ -12,8 +13,10 @@
 # - sshd -T mit lf.conf (selftest_ssh), übersprungen ohne sshd.
 #
 # Alle Schlüssel entstehen beim Lauf mit ssh-keygen in einem eigenen Ordner, keiner liegt im Repo.
-# sudo, mount, umount, lsblk, blkid, systemctl, loginctl, journalctl und die Dialoge sind
-# Attrappen. Die sudo-Attrappe führt nur Dateibefehle im Testordner aus.
+# sudo, setpriv, chown, lsblk, blkid, systemctl, loginctl, journalctl und die Dialoge sind
+# Attrappen, mount und umount auch, nur um zu sehen, dass nichts eingehängt wird. LF-SSH ist ein
+# FAT-Abbild aus mkfs.vfat und mcopy, das mtools als der Benutzer des Tests liest. Die
+# sudo-Attrappe führt nur Dateibefehle im Testordner aus.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -280,44 +283,120 @@ check "ssh-keygen höchstens 60-mal (3 × 20), auch bei 100 Zeilen" '[[ $(wc -l 
 check "höchstens 30 Meldungen, dann ein Hinweis" '[[ $(wc -l <"$T/msgs") == 31 && $(tail -n1 "$T/msgs") == "Weitere Meldungen sind nicht aufgeführt." ]]'
 
 echo "Dateien auf LF-SSH (sshkeys_take):"
-M=$T/mnt
+# Die Größe von LF-SSH im ISO (LFSSH_KIB).
+# shellcheck source=build/lf-ssh/partition.sh
+. build/lf-ssh/partition.sh
+# fat DATEI ORDNER [KIB]   Ein FAT-Abbild wie LF-SSH im ISO (Label LF-SSH, Vorgabe LFSSH_KIB) mit
+#   dem Inhalt von ORDNER, gebaut mit mkfs.vfat und mcopy.
+fat() {
+	rm -f "$1"
+	mkfs.vfat -C -n LF-SSH "$1" "${3:-$LFSSH_KIB}" >/dev/null || return 1
+	[[ -z $(ls -A "$2") ]] || MTOOLSRC=/dev/null mcopy -s -i "$1" "$2"/* ::/
+}
+# So startet sshkeys_fat mtools, danach folgt der Befehl von mtools (mdir oder mcopy).
+RD="--reuid=nobody --regid=nogroup --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20"
+# setpriv schreibt die Argumente mit, dazu die Rechte des Abbilds (nach -i) und seines Ordners, und
+# führt dann den Befehl nach -- als der Benutzer dieses Tests aus, ohne die Umgebung (wie
+# --reset-env). Ist MCOPY_RC nicht 0, endet mcopy danach mit diesem Status. chown schreibt nur mit,
+# head auch die Argumente, bevor es liest.
+MCOPY_RC=0
+setpriv() {
+	local a img="" prev=""
+	printf '%s\n' "$*" >>"$T/setpriv"
+	for a in "$@"; do
+		[[ $prev == -i ]] && img=$a
+		prev=$a
+	done
+	[[ -z $img ]] || stat -c '%a %n' -- "${img%/*}" "$img" >>"$T/setpriv-rechte"
+	while (($#)) && [[ $1 != -- ]]; do shift; done
+	shift
+	env -i PATH="$PATH" HOME=/nonexistent "$@" || return
+	[[ " $* " != *" mcopy "* ]] || return "$MCOPY_RC"
+}
+chown() { printf '%s\n' "$*" >>"$T/chown"; }
+head() {
+	printf '%s\n' "$*" >>"$T/head"
+	command head "$@"
+}
+# nur_als_leser   Lief mtools mindestens einmal und jedes Mal über setpriv wie in RD?
+nur_als_leser() {
+	local l
+	[[ -s $T/setpriv ]] || return 1
+	while IFS= read -r l; do
+		[[ $l == "$RD mdir -a -b -i "* || $l == "$RD mcopy -n -i "* ]] || return 1
+	done <"$T/setpriv"
+}
+M=$T/inhalt
+IMG=$T/lf-ssh.img
 mkdir -p "$M" "$SSHKEYS_DIR"
 touch "$M/id_ed25519" "$M/ID_RSA" "$M/Schluessel.PPK" "$M/id_ed25519.pub" "$M/notiz.txt"
 mkdir "$M/id_ordner"
-take() {
+# take_img   sshkeys_take mit dem Abbild $IMG, wie es ist. take: vorher neu aus $M gebaut.
+take_img() {
 	: >"$SSHKEYS_DIR/meldungen"
-	rm -f "$SSHKEYS_DIR/status" "$SSHKEYS_DIR/eingang"
-	sshkeys_take "$M"
+	rm -f "$SSHKEYS_DIR/status" "$SSHKEYS_DIR/eingang" "$T/setpriv" "$T/head"
+	sshkeys_take "$IMG"
 	ST=$(cat "$SSHKEYS_DIR/status")
 }
-check "wie private Schlüssel: id_… ohne .pub und .ppk, Schreibweise egal, keine Ordner" '[[ $(sshkeys_private_files "$M" | LC_ALL=C sort | tr "\n" " ") == "ID_RSA Schluessel.PPK id_ed25519 " ]]'
+take() { fat "$IMG" "$M" && take_img; }
+fat "$IMG" "$M"
+check "wie private Schlüssel: id_… ohne .pub und .ppk, Schreibweise egal, keine Ordner" '[[ $(sshkeys_names "$IMG" | sshkeys_private_files | LC_ALL=C sort | tr "\n" " ") == "ID_RSA Schluessel.PPK id_ed25519 " ]]'
 take
 check "ohne authorized_keys: keine-datei, eine Meldung je privatem Schlüssel" '[[ $ST == keine-datei && $(grep -c "wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen") == 3 ]] && grep -q "^Auf LF-SSH liegt id_ed25519, wohl ein privater Schlüssel. Er wird nie verwendet." "$SSHKEYS_DIR/meldungen"'
+check "mtools liest nur als nobody: ohne Gruppen und Capabilities, mit no_new_privs, ohne die Umgebung, mit Zeitgrenze" 'nur_als_leser'
 rm -rf "$M"
 mkdir -p "$M"
 pub ed1 >"$M/authorized_keys.txt"
 take
 check "authorized_keys.txt gilt auch" '[[ $ST == gelesen && ! -s $SSHKEYS_DIR/meldungen ]] && cmp -s "$SSHKEYS_DIR/eingang" "$M/authorized_keys.txt"'
+check "…gelesen mit mcopy als nobody, höchstens 64 KiB und ein Byte" 'nur_als_leser && grep -qxF -- "$RD mcopy -n -i $IMG ::/authorized_keys.txt -" "$T/setpriv" && grep -qx -- "-c 65537" "$T/head"'
 cp "$M/authorized_keys.txt" "$M/authorized_keys"
 take
 check "beide Dateien: keine gilt" '[[ $ST == zwei-dateien && ! -e $SSHKEYS_DIR/eingang ]]'
 rm -f "$M/authorized_keys.txt" "$M/authorized_keys"
-pub ed1 >"$T/anderswo"
-ln -s "$T/anderswo" "$M/authorized_keys"
+pub ed1 >"$M/AUTHORIZED_KEYS"
 take
-check "eine Verknüpfung zählt nicht" '[[ $ST == keine-datei && ! -e $SSHKEYS_DIR/eingang ]]'
-rm -f "$M/authorized_keys"
+check "auf FAT ist die Schreibweise beliebig" '[[ $ST == gelesen ]] && cmp -s "$SSHKEYS_DIR/eingang" "$M/AUTHORIZED_KEYS"'
+rm -f "$M/AUTHORIZED_KEYS"
+pub ed1 >"$M/authorized_keys"
+touch "$M/id_ecdsa"
+fat "$IMG" "$M" && MTOOLSRC=/dev/null mattrib +h -i "$IMG" ::/authorized_keys ::/id_ecdsa
+take_img
+check "versteckte Dateien zählen wie sichtbare: authorized_keys gilt, ein privater Schlüssel wird gemeldet" '[[ $ST == gelesen ]] && cmp -s "$SSHKEYS_DIR/eingang" "$M/authorized_keys" && grep -q "^Auf LF-SSH liegt id_ecdsa, wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen"'
+pub ed1 >"$M/authorized_keys.txt"
+fat "$IMG" "$M" && MTOOLSRC=/dev/null mattrib +h -i "$IMG" ::/authorized_keys.txt
+take_img
+check "…auch bei zwei Dateien, eine davon versteckt: keine gilt" '[[ $ST == zwei-dateien && ! -e $SSHKEYS_DIR/eingang ]]'
+rm -f "$M/authorized_keys" "$M/authorized_keys.txt" "$M/id_ecdsa"
+mkdir "$M/authorized_keys"
+pub ed1 >"$M/authorized_keys/authorized_keys"
+take
+check "ein Ordner authorized_keys zählt nicht" '[[ $ST == keine-datei && ! -e $SSHKEYS_DIR/eingang ]]'
+rm -rf "$M/authorized_keys"
 head -c 65537 /dev/zero | tr "\0" "#" >"$M/authorized_keys"
 take
 check "größer als 64 KiB: gilt nicht" '[[ $ST == zu-gross && ! -e $SSHKEYS_DIR/eingang ]]'
+head -c 1048576 /dev/zero | tr "\0" "#" >"$M/authorized_keys"
+take
+check "auch bei 1 MiB: gelesen werden höchstens 64 KiB und ein Byte" '[[ $ST == zu-gross && ! -e $SSHKEYS_DIR/eingang ]] && grep -qx -- "-c 65537" "$T/head"'
 head -c 65536 /dev/zero | tr "\0" "#" >"$M/authorized_keys"
 take
 check "genau 64 KiB: wird gelesen" '[[ $ST == gelesen && $(stat -c %s "$SSHKEYS_DIR/eingang") == 65536 ]]'
+pub ed1 >"$M/authorized_keys"
+MCOPY_RC=1
+take
+MCOPY_RC=0
+check "scheitert mcopy, auch nach einem Teil der Datei: fehler" '[[ $ST == fehler && ! -e $SSHKEYS_DIR/eingang ]]'
+head -c 1048576 /dev/zero >"$IMG"
+take_img 2>/dev/null
+check "kein FAT, das mtools lesen kann: fehler" '[[ $ST == fehler && ! -e $SSHKEYS_DIR/eingang ]]'
 
 echo "Laden beim Start (sshkeys_load):"
 STICK=$T/stick
-mkdir -p "$STICK"
-BOOT=/dev/sdz FS_TYPE=vfat FS_LABEL=LF-SSH MOUNT_OK=1 UMOUNT_OK=1
+# Die Partitionen sind Dateien in $D, lsblk nennt sie mit diesen Pfaden.
+D=$T/dev
+mkdir -p "$STICK" "$D"
+BOOT=/dev/sdz FS_TYPE=vfat FS_LABEL=LF-SSH
 boot_disk() {
 	[[ -n $BOOT ]] || return 1
 	echo "$BOOT"
@@ -338,29 +417,34 @@ blkid() {
 	LABEL) echo "$FS_LABEL" ;;
 	esac
 }
+# Eingehängt wird nichts: mount und umount schreiben nur mit und scheitern.
 mount() {
 	printf '%s\n' "$*" >>"$T/mount"
-	((MOUNT_OK)) || return 32
-	cp -a "$STICK/." "${!#}/"
+	return 32
 }
 umount() {
 	printf '%s\n' "$*" >>"$T/umount"
-	((UMOUNT_OK)) || return 32
-	find "$1" -mindepth 1 -delete
+	return 32
 }
-P1='{"name":"/dev/sdz1","type":"part","label":"LEUCHTFEUER","partlabel":"ISO9660"}'
-P2='{"name":"/dev/sdz2","type":"part","label":"LF_EFI","partlabel":"Appended2"}'
-P3='{"name":"/dev/sdz3","type":"part","label":"LF-SSH","partlabel":"LF-SSH"}'
-P4='{"name":"/dev/sdz4","type":"part","label":null,"partlabel":"Gap1"}'
-P5='{"name":"/dev/sdz5","type":"part","label":null,"partlabel":"LF-SSH"}'
+P1='{"name":"'$D'/sdz1","type":"part","label":"LEUCHTFEUER","partlabel":"ISO9660"}'
+P2='{"name":"'$D'/sdz2","type":"part","label":"LF_EFI","partlabel":"Appended2"}'
+P3='{"name":"'$D'/sdz3","type":"part","label":"LF-SSH","partlabel":"LF-SSH"}'
+P4='{"name":"'$D'/sdz4","type":"part","label":null,"partlabel":"Gap1"}'
+P5='{"name":"'$D'/sdz5","type":"part","label":null,"partlabel":"LF-SSH"}'
 PARTS="$P1,$P2,$P3,$P4"
 echo LF_BOOT_DISKS=1 >"$LF_BOOT_ENV"
-load() {
-	rm -f "$T/lsblk" "$T/blkid" "$T/mount" "$T/umount"
+run_load() {
+	rm -f "$T/lsblk" "$T/blkid" "$T/mount" "$T/umount" "$T/setpriv" "$T/setpriv-rechte" "$T/chown" "$T/head"
 	sshkeys_load
 	LOAD_RC=$?
 	ST=$(cat "$SSHKEYS_DIR/status" 2>/dev/null)
 }
+# load [KIB]   LF-SSH ($D/sdz3) als FAT-Abbild mit dem Inhalt von $STICK, Vorgabe so groß wie im ISO,
+#   dann sshkeys_load.
+load() { fat "$D/sdz3" "$STICK" "${1:-$LFSSH_KIB}" && run_load; }
+# aufgeraeumt   Liegt nach dem Laden weder eine Kopie von LF-SSH noch die gelesene Datei unter
+#   $SSHKEYS_DIR?
+aufgeraeumt() { ! compgen -G "$SSHKEYS_DIR/lesen.*" >/dev/null && [[ ! -e $SSHKEYS_DIR/eingang ]]; }
 {
 	pub ed1
 	echo "ssh-dss AAAAB3NzaC1kc3MAAACBAP"
@@ -368,47 +452,51 @@ load() {
 } >"$STICK/authorized_keys"
 rm -rf "$T/run"
 load
-check "geladen: Zustand ok 2, die falsche Zeile gemeldet" '((LOAD_RC == 0)) && [[ $ST == "ok 2" && $(wc -l <"$SSHKEYS_DIR/kandidaten") == 2 ]] && grep -q "^Zeile 2: DSA" "$SSHKEYS_DIR/meldungen"'
+check "geladen: Zustand ok 2, die falsche Zeile gemeldet (LF-SSH so groß wie im ISO)" '((LOAD_RC == 0)) && [[ $ST == "ok 2" && $(wc -l <"$SSHKEYS_DIR/kandidaten") == 2 ]] && grep -q "^Zeile 2: DSA" "$SSHKEYS_DIR/meldungen"'
 check "Ordner 0755 (sshd liest als rescue), Kandidaten und Meldungen nur für root (0600)" '[[ $(stat -c %a "${SSHKEYS_DIR%/*}") == 755 && $(stat -c %a "$SSHKEYS_DIR") == 755 && $(stat -c %a "$SSHKEYS_DIR/kandidaten") == 600 && $(stat -c %a "$SSHKEYS_DIR/meldungen") == 600 ]]'
 check "authorized_keys ist leer, bis SSH eingeschaltet ist (0644)" '[[ -f $SSHKEYS_DIR/authorized_keys && ! -s $SSHKEYS_DIR/authorized_keys && $(stat -c %a "$SSHKEYS_DIR/authorized_keys") == 644 ]]'
 check "gefragt werden nur die Partitionen des Startmediums" '[[ $(cat "$T/lsblk") == "-J -p -o NAME,TYPE,LABEL,PARTLABEL /dev/sdz" ]]'
-check "eingehängt nur lesend, ohne Geräte, setuid und Programme" '[[ $(cat "$T/mount") == "-t vfat -o ro,nodev,nosuid,noexec,uid=0,gid=0,umask=077 /dev/sdz3 $SSHKEYS_DIR/lf-ssh" ]]'
-check "gleich wieder ausgehängt, nichts bleibt liegen" '[[ $(cat "$T/umount") == "$SSHKEYS_DIR/lf-ssh" && ! -e $SSHKEYS_DIR/lf-ssh && ! -e $SSHKEYS_DIR/eingang ]]'
+check "nie eingehängt: root kopiert nur die Bytes von LF-SSH, höchstens so viele wie im ISO und eins, mtools liest die Kopie als nobody" '[[ ! -e $T/mount && ! -e $T/umount ]] && grep -qxF -- "-c $((LFSSH_KIB * 1024 + 1)) -- $D/sdz3" "$T/head" && nur_als_leser && grep -qE " -i $SSHKEYS_DIR/lesen\.[A-Za-z0-9]{6}/[A-Za-z0-9]{10} " "$T/setpriv"'
+check "die Kopie gehört nobody und ist nur für nobody lesbar, ihren Ordner listet nur root auf; danach ist beides weg" '[[ $(cat "$T/chown") == "-- nobody:nogroup $SSHKEYS_DIR/lesen."* ]] && awk "NR % 2 == 1 && \$1 != 711 { bad = 1 } NR % 2 == 0 && \$1 != 400 { bad = 1 } END { exit bad || NR < 4 }" "$T/setpriv-rechte" && aufgeraeumt'
 echo "restrict,pty alt" >"$SSHKEYS_DIR/authorized_keys"
+mkdir -p "$SSHKEYS_DIR/lesen.altalt"
 load
-check "jeder Start beginnt mit leerem authorized_keys" '[[ $ST == "ok 2" && ! -s $SSHKEYS_DIR/authorized_keys ]]'
+check "jeder Start beginnt mit leerem authorized_keys und ohne Reste eines früheren Laufs" '[[ $ST == "ok 2" && ! -s $SSHKEYS_DIR/authorized_keys ]] && aufgeraeumt'
 BOOT=""
 load
-check "ohne sicher erkannten Stick: nichts gelesen (kein-medium)" '[[ $ST == kein-medium && ! -e $T/lsblk && ! -e $T/mount && ! -s $SSHKEYS_DIR/kandidaten ]]'
+check "ohne sicher erkannten Stick: nichts gelesen (kein-medium)" '[[ $ST == kein-medium && ! -e $T/lsblk && ! -e $T/head && ! -s $SSHKEYS_DIR/kandidaten ]]'
 BOOT=/dev/sdz
 echo LF_BOOT_DISKS=2 >"$LF_BOOT_ENV"
 load
-check "zwei Disks mit der Kennung des Sticks: nichts gelesen (mehrdeutig)" '[[ $ST == mehrdeutig && ! -e $T/lsblk && ! -e $T/mount ]]'
+check "zwei Disks mit der Kennung des Sticks: nichts gelesen (mehrdeutig)" '[[ $ST == mehrdeutig && ! -e $T/lsblk && ! -e $T/head ]]'
 rm -f "$LF_BOOT_ENV"
 load
-check "ohne /run/lf-boot.env ebenso" '[[ $ST == mehrdeutig && ! -e $T/mount ]]'
+check "ohne /run/lf-boot.env ebenso" '[[ $ST == mehrdeutig && ! -e $T/head ]]'
 echo LF_BOOT_DISKS=1 >"$LF_BOOT_ENV"
 PARTS="$P1,$P2,$P4"
 load
-check "ohne Partition LF-SSH: keine-partition" '[[ $ST == keine-partition && ! -e $T/mount ]]'
+check "ohne Partition LF-SSH: keine-partition" '[[ $ST == keine-partition && ! -e $T/head ]]'
 PARTS="$P1,$P2,$P3,$P4,$P5"
 load
-check "zwei Partitionen LF-SSH (eine nur mit dem GPT-Namen): keine gilt" '[[ $ST == zwei-partitionen && ! -e $T/mount ]]'
+check "zwei Partitionen LF-SSH (eine nur mit dem GPT-Namen): keine gilt" '[[ $ST == zwei-partitionen && ! -e $T/head ]]'
 PARTS="$P1,$P2,$P3,$P4"
 FS_TYPE=ext4
 load
-check "kein FAT: gilt nicht, nicht eingehängt" '[[ $ST == kein-fat && ! -e $T/mount ]] && grep -qx "/dev/sdz3" "$T/blkid"'
+check "kein FAT: gilt nicht, nichts gelesen" '[[ $ST == kein-fat && ! -e $T/head ]] && grep -qx "$D/sdz3" "$T/blkid"'
 FS_TYPE=vfat FS_LABEL=ANDERS
 load
-check "FAT mit anderem Label: gilt nicht" '[[ $ST == kein-fat && ! -e $T/mount ]]'
-FS_LABEL=LF-SSH MOUNT_OK=0
-load
-check "Einhängen scheitert: fehler, kein Ordner bleibt" '[[ $ST == fehler && ! -e $T/umount && ! -e $SSHKEYS_DIR/lf-ssh ]]'
-MOUNT_OK=1 UMOUNT_OK=0
-load
-check "Aushängen scheitert: fehler, kein Schlüssel gilt" '[[ $ST == fehler && ! -e $SSHKEYS_DIR/eingang && ! -s $SSHKEYS_DIR/kandidaten ]]'
-UMOUNT_OK=1
-rm -rf "$SSHKEYS_DIR/lf-ssh"
+check "FAT mit anderem Label: gilt nicht" '[[ $ST == kein-fat && ! -e $T/head ]]'
+FS_LABEL=LF-SSH
+load $((LFSSH_KIB + 1))
+check "größer als im ISO: gilt nicht wie ein falsches Label, mtools liest nichts, nichts bleibt liegen" '[[ $ST == partition-zu-gross && ! -e $T/setpriv && ! -s $SSHKEYS_DIR/kandidaten ]] && grep -qxF -- "-c $((LFSSH_KIB * 1024 + 1)) -- $D/sdz3" "$T/head" && aufgeraeumt'
+rm -f "$D/sdz3"
+mkdir "$D/sdz3"
+run_load 2>/dev/null
+rmdir "$D/sdz3"
+check "Kopieren scheitert: fehler, mtools liest nichts, nichts bleibt liegen" '[[ $ST == fehler && ! -e $T/setpriv && ! -s $SSHKEYS_DIR/kandidaten ]] && aufgeraeumt'
+head -c 1048576 /dev/zero >"$D/sdz3"
+run_load 2>/dev/null
+check "kein FAT, das mtools lesen kann (blkid sagt FAT): fehler, kein Schlüssel gilt, nichts bleibt liegen" '[[ $ST == fehler && ! -s $SSHKEYS_DIR/kandidaten ]] && nur_als_leser && aufgeraeumt'
 echo "ssh-dss AAAAB3NzaC1kc3MAAACBAP" >"$STICK/authorized_keys"
 load
 check "nur falsche Zeilen: leer" '[[ $ST == leer && ! -s $SSHKEYS_DIR/kandidaten ]] && grep -q "^Zeile 1: DSA" "$SSHKEYS_DIR/meldungen"'
@@ -417,7 +505,10 @@ touch "$STICK/id_rsa"
 load
 check "nur ein privater Schlüssel: keine-datei mit Meldung" '[[ $ST == keine-datei ]] && grep -q "^Auf LF-SSH liegt id_rsa, wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen"'
 rm -f "$STICK/id_rsa"
-check "jeder Zustand hat einen Satz für tty1 und den Selbsttest" '( for s in leer keine-datei keine-partition kein-medium mehrdeutig zwei-partitionen kein-fat zwei-dateien zu-gross fehler; do [[ -n $(sshkeys_status_text "$s") ]] || exit 1; done ) && [[ $(sshkeys_status_text ok 1) == "1 Schlüssel von LF-SSH geprüft." && $(sshkeys_status_text ok 3) == "3 Schlüssel von LF-SSH geprüft." ]]'
+unset -f setpriv chown head mount umount
+check "jeder Zustand hat einen Satz für tty1 und den Selbsttest" '( for s in leer keine-datei keine-partition kein-medium mehrdeutig zwei-partitionen kein-fat partition-zu-gross zwei-dateien zu-gross fehler; do [[ -n $(sshkeys_status_text "$s") ]] || exit 1; done ) && [[ $(sshkeys_status_text ok 1) == "1 Schlüssel von LF-SSH geprüft." && $(sshkeys_status_text ok 3) == "3 Schlüssel von LF-SSH geprüft." ]]'
+check "zu große Partition: ein eigener Satz mit der Größe im ISO" '[[ $(sshkeys_status_text partition-zu-gross) == "Die Partition LF-SSH ist größer als im ISO ($((LFSSH_KIB / 1024)) MiB). Sie gilt nicht. Den Stick neu beschreiben, siehe Anleitung." ]]'
+check "höchstens so groß wie LF-SSH im ISO (LFSSH_KIB in build/lf-ssh/partition.sh), mtools im Image" '((${SSHKEYS_MAX_PART_BYTES:-0} == LFSSH_KIB * 1024)) && grep -qx mtools build/packages.list'
 
 echo "Hinweis beim Start (sshkeys_notice):"
 notice() {
@@ -442,6 +533,8 @@ notice mehrdeutig ""
 check "mehrdeutig: Hinweis, aber kein Rat zur Datei" 'grep -q "mehr als eine Disk" "$T/dialog" && ! grep -q "Die Datei an einem" "$T/dialog"'
 notice zwei-partitionen ""
 check "zwei Partitionen: Hinweis, aber kein Rat zur Datei" 'grep -q "mehrere Partitionen LF-SSH" "$T/dialog" && ! grep -q "Die Datei an einem" "$T/dialog"'
+notice partition-zu-gross ""
+check "zu große Partition: Hinweis, aber kein Rat zur Datei" 'grep -q "größer als im ISO" "$T/dialog" && ! grep -q "Die Datei an einem" "$T/dialog"'
 rm -f "$SSHKEYS_DIR/status" "$T/dialog"
 sshkeys_notice
 check "ohne Zustand: kein Hinweis (das meldet der Selbsttest)" '[[ ! -e $T/dialog ]]'
