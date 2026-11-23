@@ -155,7 +155,7 @@ Nur mit Internet und eigenem Konto.
 sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
-Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)` und `LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)`. Die Datei gehört ins Issue. Der Selbsttest schaltet eine Freigabe frei und lässt sie ablaufen: Danach ist Claude bis zum Neustart gesperrt. Den Selbsttest darum gleich nach dem Einschalten starten und danach am Netzschalter ausschalten (gedrückt halten).
+Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`, `LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)` und `LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)`. Die Datei gehört ins Issue. Der Selbsttest schaltet eine Freigabe frei und lässt sie ablaufen: Danach ist Claude bis zum Neustart gesperrt. Den Selbsttest darum gleich nach dem Einschalten starten und danach am Netzschalter ausschalten (gedrückt halten).
 
 10 SSH
 ------

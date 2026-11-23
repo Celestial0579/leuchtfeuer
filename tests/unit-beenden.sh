@@ -24,6 +24,9 @@ trap 'rm -rf "$T"' EXIT
 LF_LOG=$T/lf.log
 RUECKSTAND_ISO=$CLAUDE_FREIGABE_RUECKSTAND
 CLAUDE_FREIGABE_RUECKSTAND=$T/rueckstand
+# Der Merker im Kernel (GHSA-874q-q3v7-m56v): eine Datei, 2 wie nach dem Start.
+CLAUDE_FREIGABE_MERKER=$T/merker
+echo 2 >"$T/merker"
 
 fails=0
 check() {
@@ -131,6 +134,10 @@ start "an, ohne Ablauf" "an bis 12:40"
 check "nach dem Warten mit Timer (Freischalten war noch nicht fertig): nichts" '((RC == 1)) && grep -qx "sleep 5" "$T/aufrufe" && ! grep -q "^sudo" "$T/aufrufe"'
 LF_FREIGABE_WARTE=1 start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
 check "die Wartezeit kommt aus LF_FREIGABE_WARTE" '((RC == 0)) && grep -qx "sleep 1" "$T/aufrufe"'
+echo 1 >"$T/merker"
+start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
+check "sagt lf-freigabe danach aus, obwohl der Merker im Kernel die Freigabe zeigt: der Zustand sagt Neustart nötig (GHSA-874q-q3v7-m56v)" '((RC == 0)) && [[ $OUT == "Neustart nötig: Der Kernel zeigt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem aus" ]]'
+echo 2 >"$T/merker"
 
 echo "Aufruf beim Start von lf:"
 l_end=$(grep -n '^if freigabe_ende=$(claude_freigabe_ohne_timer ui); then$' rescue/lf | cut -d: -f1)

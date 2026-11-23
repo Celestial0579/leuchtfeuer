@@ -21,6 +21,10 @@ CLAUDE_XDG=${LF_RUN:-/run/lf}/claude-xdg
 CLAUDE_SLICE=lf-claude.slice
 # Der Rückstand nach einer Freigabe (RESIDUE in lf-freigabe).
 CLAUDE_FREIGABE_RUECKSTAND=/run/lf/claude-freigabe-rueckstand
+# Der Merker im Kernel für eine Freigabe seit dem Start (MERKER in lf-freigabe, GHSA-874q-q3v7-m56v):
+# 2 nach dem Start, 1 von der ersten Freigabe bis zum Neustart. LF_FREIGABE_MERKER nennt für Tests
+# eine andere Datei.
+CLAUDE_FREIGABE_MERKER=${LF_FREIGABE_MERKER:-/proc/sys/kernel/unprivileged_bpf_disabled}
 
 # claude_wayland_dir   Verzeichnis für den Socket von cage: gehört dem Live-Benutzer, Gruppe
 #   $CLAUDE_USER, setgid. Der Socket darin bekommt die Gruppe von selbst.
@@ -36,11 +40,34 @@ claude_wayland_share() {
 	chmod 0660 "$1"
 }
 
+# claude_freigabe_merker   Der Wert des Merkers im Kernel, gelesen mit read in diesem Prozess, ohne
+#   neues Programm. Leer, wenn er sich nicht lesen lässt.
+claude_freigabe_merker() {
+	local v=''
+	{ read -r v <"$CLAUDE_FREIGABE_MERKER"; } 2>/dev/null
+	printf '%s\n' "$v"
+}
+
+# claude_freigabe_zustand   Was lf-freigabe status sagt, mit dem Merker im Kernel aus diesem Prozess
+#   (GHSA-874q-q3v7-m56v): Das Menü läuft seit dem Start und hat eine spätere /etc/ld.so.preload nicht
+#   geladen, lf-freigabe als neues Programm schon. Sagt status "aus", obwohl der Merker eine Freigabe
+#   seit dem Start zeigt (jeder Wert außer 0 und 2, auch keiner), heißt es "Neustart nötig: …".
+claude_freigabe_zustand() {
+	local s m
+	s=$(lf-freigabe status 2>/dev/null)
+	m=$(claude_freigabe_merker)
+	if [[ $s == aus && $m != 0 && $m != 2 ]]; then
+		echo "Neustart nötig: Der Kernel zeigt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem aus"
+	else
+		printf '%s\n' "$s"
+	fi
+}
+
 # claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (lf-freigabe), und
 #   nach einer Freigabe bis zum Neustart ("Neustart nötig …", GHSA-874q-q3v7-m56v).
 claude_freigabe_hinweis() {
 	local s
-	s=$(lf-freigabe status 2>/dev/null)
+	s=$(claude_freigabe_zustand)
 	case $s in
 	an*) echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe" ;;
 	"Neustart nötig"*) echo "ACHTUNG: ${s%%: *}. Claude bleibt bis dahin gesperrt. Ausschalten: Netzschalter gedrückt halten, bis das Gerät aus ist" ;;
@@ -49,10 +76,11 @@ claude_freigabe_hinweis() {
 }
 
 # claude_startbar   Darf Claude starten (GHSA-874q-q3v7-m56v)? Ohne Freigabe seit dem Start ("aus")
-#   und während einer ("an bis …", "an, ohne Ablauf"). Nach einer Freigabe ("Neustart nötig …"), mit
-#   einem Rückstand ("an: Rückstand …") und ohne Antwort von lf-freigabe nicht.
+#   und während einer ("an bis …", "an, ohne Ablauf"). Nach einer Freigabe ("Neustart nötig …", auch
+#   wenn nur der Merker im Kernel sie zeigt), mit einem Rückstand ("an: Rückstand …") und ohne Antwort
+#   von lf-freigabe nicht.
 claude_startbar() {
-	case $(lf-freigabe status 2>/dev/null) in
+	case $(claude_freigabe_zustand) in
 	aus | "an bis "* | "an, ohne Ablauf") return 0 ;;
 	esac
 	return 1
@@ -60,7 +88,7 @@ claude_startbar() {
 
 # claude_gesperrt_text ZUSTAND   Der Text, mit dem der Assistent sagt, dass Claude bis zum Neustart
 #   gesperrt ist: statt Claude zu starten und nach dem Ende von Claude, wenn eine Freigabe
-#   währenddessen endete. ZUSTAND ist die Ausgabe von lf-freigabe status.
+#   währenddessen endete. ZUSTAND ist die Ausgabe von claude_freigabe_zustand.
 claude_gesperrt_text() {
 	echo "Neustart nötig: Claude startet erst nach einem Neustart wieder.\n\nZustand: $(text_clean 400 <<<"${1:-unbekannt}")\n\nWas Claude mit einer Freigabe als root eingerichtet haben kann, kann bis dahin in jedem Programm als root mitlaufen. Halte den Netzschalter gedrückt, bis das Gerät aus ist, und schalte es dann wieder ein, nicht über Beenden > Ausschalten oder Neustart und nicht mit Strg+Alt+Entf."
 }
@@ -71,7 +99,8 @@ claude_gesperrt_text() {
 #   ablauf). Beim Freischalten und Verlängern liegt zwischen Regel und Timer ein kurzer Moment:
 #   Darum gilt es erst, wenn status nach LF_FREIGABE_WARTE Sekunden (Vorgabe 5) noch dasselbe sagt.
 #   Gewartet wird nur, wenn status zuerst "an, ohne Ablauf" sagt. Mit "ui" steht solange ein Hinweis
-#   auf dem Bildschirm. Gibt nach dem Ende status aus und endet mit 0, sonst mit 1.
+#   auf dem Bildschirm. Gibt nach dem Ende den Zustand aus (claude_freigabe_zustand) und endet
+#   mit 0, sonst mit 1.
 claude_freigabe_ohne_timer() {
 	local s
 	s=$(lf-freigabe status 2>/dev/null)
@@ -82,13 +111,13 @@ claude_freigabe_ohne_timer() {
 	[[ $s == "an, ohne Ablauf" ]] || return 1
 	log "Claude-Freigabe ohne Timer (an, ohne Ablauf): endet wie beim Ablauf"
 	run sudo lf-freigabe ablauf
-	lf-freigabe status 2>/dev/null
+	claude_freigabe_zustand
 	return 0
 }
 
 # claude_freigabe_ende_text ANFANG ZUSTAND   Der Text des Dialogs, nachdem claude_freigabe_ohne_timer
 #   eine Freigabe beendet hat, beim Start von lf wie im Hauptmenü: ANFANG beginnt den ersten Satz,
-#   ZUSTAND ist die Ausgabe von claude_freigabe_ohne_timer (status danach).
+#   ZUSTAND ist die Ausgabe von claude_freigabe_ohne_timer (der Zustand danach).
 claude_freigabe_ende_text() {
 	echo "$1 eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $(text_clean 300 <<<"${2:-unbekannt}")\n\nClaude bleibt bis zum Neustart gesperrt. Sicher endet root-Zugriff nur mit dem Ausschalten am Netzschalter."
 }
@@ -120,7 +149,7 @@ claude_freigabe_an() {
 #   Neustart.
 claude_freigabe_menu() {
 	local s c t
-	s=$(lf-freigabe status 2>/dev/null)
+	s=$(claude_freigabe_zustand)
 	case $s in
 	"an bis "* | "an, ohne Ablauf") ;;
 	aus)
@@ -181,7 +210,7 @@ claude_freigabe_neu() {
 claude_freigabe_beenden() {
 	local s
 	run sudo lf-freigabe aus && log "Claude-Freigabe: aus"
-	s=$(lf-freigabe status 2>/dev/null)
+	s=$(claude_freigabe_zustand)
 	case $s in
 	aus) ;;
 	"Neustart nötig"*) ui_msg "Claude-Freigabe" "Die Freigabe ist beendet. $(claude_gesperrt_text "$s")" ;;
@@ -292,7 +321,7 @@ claude_start() {
 	local case=${1:-} dir="$LF_RUN/claude-session"
 	# Nach einer Freigabe startet Claude erst nach einem Neustart wieder (GHSA-874q-q3v7-m56v).
 	if ! claude_startbar; then
-		ui_msg "Claude" "$(claude_gesperrt_text "$(lf-freigabe status 2>/dev/null)")"
+		ui_msg "Claude" "$(claude_gesperrt_text "$(claude_freigabe_zustand)")"
 		return 0
 	fi
 	if ! is_online; then
@@ -320,7 +349,7 @@ claude_start() {
 	EOF
 	claude_scope sh -c 'cd "$1" && exec "$2"' lf "$dir" "$CLAUDE_CMD"
 	# Endete währenddessen eine Freigabe, hat lf-freigabe Claude beendet: Das soll hier stehen.
-	claude_startbar || ui_msg "Claude" "$(claude_gesperrt_text "$(lf-freigabe status 2>/dev/null)")"
+	claude_startbar || ui_msg "Claude" "$(claude_gesperrt_text "$(claude_freigabe_zustand)")"
 	return 0
 }
 
@@ -328,7 +357,7 @@ claude_desktop() {
 	local rc=0
 	# Wie claude_start: nach einer Freigabe erst nach einem Neustart.
 	if ! claude_startbar; then
-		ui_msg "Claude Desktop" "$(claude_gesperrt_text "$(lf-freigabe status 2>/dev/null)")"
+		ui_msg "Claude Desktop" "$(claude_gesperrt_text "$(claude_freigabe_zustand)")"
 		return 0
 	fi
 	if ! is_online; then
@@ -349,7 +378,7 @@ claude_desktop() {
 	if claude_startbar; then
 		((rc == 0)) || ui_msg "Claude Desktop" "Claude Desktop wurde mit Fehler beendet. Details im Protokoll:\n$LF_LOG"
 	else
-		ui_msg "Claude Desktop" "$(claude_gesperrt_text "$(lf-freigabe status 2>/dev/null)")"
+		ui_msg "Claude Desktop" "$(claude_gesperrt_text "$(claude_freigabe_zustand)")"
 	fi
 	return 0
 }

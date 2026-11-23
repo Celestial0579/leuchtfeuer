@@ -1491,14 +1491,18 @@ selftest_claude_aufgabe() {
 #   Freigabe gibt es erst nach dem Neustart (GHSA-874q-q3v7-m56v). Was danach als lf-claude läuft,
 #   startet der Selbsttest als root (selftest_as), ohne die Grundregel.
 selftest_claude_freigabe() {
-	local good=1
+	local good=1 m0 m1 m2
 	lf-freigabe aus >/dev/null 2>&1
+	# Der Merker im Kernel für eine Freigabe seit dem Start (GHSA-874q-q3v7-m56v): vor dem Freischalten
+	# 2, danach bis zum Neustart 1. Nur gelesen (claude_freigabe_merker), nie gesetzt.
+	m0=$(claude_freigabe_merker)
 	if selftest_as sudo -n lf-freigabe an 30 >/dev/null 2>&1 || SUDO_USER=lf-claude lf-freigabe an 30 >/dev/null 2>&1 ||
 		[[ $(lf-freigabe status) != aus* ]]; then
 		echo "LF-SELFTEST: Freigabe: lf-claude konnte sich selbst freischalten"
 		good=0
 	fi
 	SUDO_USER=rescue lf-freigabe an 1 >/dev/null 2>&1
+	m1=$(claude_freigabe_merker)
 	if [[ $(lf-freigabe status) == "an bis "* ]] && selftest_as sudo -n true 2>/dev/null &&
 		systemctl is-active -q lf-claude-freigabe-ende.timer && [[ $(lf-freigabe zeile </dev/null) == ACHTUNG* ]]; then
 		echo "LF-SELFTEST: Freigabe: nach dem Freischalten hat lf-claude volles sudo, der Ablauf ist gesetzt, die Statuszeile zeigt es"
@@ -1509,6 +1513,7 @@ selftest_claude_freigabe() {
 	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst. Danach sagt status bis zum
 	# Neustart "Neustart nötig", die Grundregel ist gesperrt, und "an" lehnt ab (GHSA-874q-q3v7-m56v).
 	systemctl start lf-claude-freigabe-ende.service
+	m2=$(claude_freigabe_merker)
 	if [[ $(lf-freigabe status) == "Neustart nötig (letzte Freigabe bis "* ]] && ! selftest_as sudo -n true 2>/dev/null &&
 		[[ ! -e /etc/sudoers.d/lf-claude-freigabe && ! -e /etc/sudoers.d/lf-claude ]]; then
 		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude kein sudo mehr, auch nicht lf-lesen und lf-aufgabe, status sagt Neustart nötig"
@@ -1520,6 +1525,12 @@ selftest_claude_freigabe() {
 	if SUDO_USER=rescue lf-freigabe an 1 >/dev/null 2>&1 || [[ -e /etc/sudoers.d/lf-claude-freigabe ]]; then
 		echo "LF-SELFTEST: Freigabe: nach einer Freigabe ließ sich vor dem Neustart eine neue freischalten"
 		lf-freigabe aus >/dev/null 2>&1
+		good=0
+	fi
+	if [[ $m0 == 2 && $m1 == 1 && $m2 == 1 ]]; then
+		echo "LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)"
+	else
+		echo "LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten ${m0:-nicht lesbar}, nach dem Freischalten ${m1:-nicht lesbar}, nach dem Ablauf ${m2:-nicht lesbar} statt 2, 1 und 1 (kernel.unprivileged_bpf_disabled)"
 		good=0
 	fi
 	grep -q "abgelaufen" /run/lf/claude-aufgaben.log 2>/dev/null || { echo "LF-SELFTEST: Freigabe: Ablauf steht nicht im Protokoll"; good=0; }

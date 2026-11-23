@@ -61,6 +61,11 @@
 #     (letzte Freigabe bis HH:MM): …" mit dem Hinweis aufs Ausschalten am Netzschalter (F15), "an"
 #     lehnt eine neue Freigabe ab, der Assistent startet Claude nicht und sagt das. Der Assistent
 #     startet ohne kexec und soft-reboot neu, die Anleitung rät zum Ausschalten am Netzschalter.
+#     Dass es eine gab, zeigt auch der Merker im Kernel (kernel.unprivileged_bpf_disabled, "an" setzt
+#     ihn von 2 auf 1, hier nur in der Attrappe von /proc): Fehlen die Marken unter /run, nimmt das
+#     Ende trotzdem den Weg nach einer Freigabe, und das Menü liest ihn selbst. Prozesse von lf-claude
+#     außerhalb seiner cgroups hält das Ende gleich nach dem Entfernen der Regel an (STOP), auch für
+#     ein Ende, das hart abbricht. Kein Test versucht, den Merker zurückzusetzen.
 #   - Gilt beim Start von lf die Regel ohne Timer ("an, ohne Ablauf") und nach 5 s noch immer, endet
 #     die Freigabe wie beim Ablauf (claude_freigabe_ohne_timer in claude.sh, #84).
 #   - Hat sich während der Freigabe unter /run/lf/ssh etwas geändert (die Schlüssel von LF-SSH), ist
@@ -128,6 +133,10 @@ echo /sbin/modprobe >"$T/proc/sys/kernel/modprobe"
 : >"$W/sys/kernel/uevent_helper"
 # Kein Kernel für kexec geladen.
 echo 0 >"$W/sys/kernel/kexec_loaded" && echo 0 >"$W/sys/kernel/kexec_crash_loaded"
+# Der Merker im Kernel für eine Freigabe seit dem Start (GHSA-874q-q3v7-m56v): nach dem Start 2, "an"
+# setzt 1 (MERKER in lf-freigabe). Hier eine Datei in der Attrappe von /proc, reboot_sim setzt sie auf 2.
+MK=$T/proc/sys/kernel/unprivileged_bpf_disabled
+echo 2 >"$MK"
 echo enabled >"$T/proc/sys/fs/binfmt_misc/status"
 : >"$T/proc/sys/fs/binfmt_misc/register"
 # Kernel ohne Taint, zwei Module mit ihren Dateien, ein leeres BPF-Dateisystem (B6). Jetzt sind 50 s
@@ -628,7 +637,7 @@ netz_reset() {
 # netz_pid   Der Hauptprozess der Sperre in der Attrappe von systemctl.
 netz_pid() { sed -n 's/^MainPID=//p' "$T/unit/$NU"; }
 # reboot_sim   Neustart nachgestellt: Grundregel zurück, Schnappschuss, Rückstand, die Marken der
-#   letzten Freigabe und ein System für soft-reboot weg (/run liegt im RAM).
+#   letzten Freigabe und ein System für soft-reboot weg (/run liegt im RAM), der Merker im Kernel 2.
 reboot_sim() {
 	local d
 	if [[ -f $T/sudoers.d/lf-claude.lf-gesperrt ]]; then mv "$T/sudoers.d/lf-claude.lf-gesperrt" "$T/sudoers.d/lf-claude"; fi
@@ -639,6 +648,8 @@ reboot_sim() {
 	rm -rf "$SNAP" "$R" "$W/run/nextroot" "$W/run/nextroot.lf-gesperrt."* "$T/run/ssh" "$T/run/ssh.lf-gesperrt."*
 	rm -f "$T"/frozen-* "$T"/prozesslos-* "$T"/nicht-anhaltbar-* "$T/run/claude-grundregel-sperre" \
 		"$T/run/claude-freigabe-zuletzt" "$T/run/claude-freigabe-bis" "$CG/cgroup.kill" "$CGU/cgroup.kill"
+	chmod 0755 "$T/proc/sys/kernel" && chmod 0644 "$MK" 2>/dev/null
+	echo 2 >"$MK"
 	netz_reset
 	boot
 }
@@ -712,11 +723,13 @@ self /lf.slice/lf-claude.slice/cli.scope
 bash "$F" an 30 >"$T/out" 2>&1
 RC=$?
 check "aus der cgroup von Claude, Vorfahren unauffällig: abgelehnt" '[[ $RC == 2 && ! -e $RULE ]] && grep -q "nur der Techniker" "$T/out"'
+check "ein abgelehntes Freischalten setzt den Merker im Kernel nicht (GHSA-874q-q3v7-m56v)" '[[ $(cat "$MK") == 2 ]]'
 self /user.slice/user-1000.slice/session-1.scope
 # Das erste Freischalten braucht keine Konsole: Der Selbsttest der ISO schaltet aus einem Dienst frei.
 bash "$F" an 30 >"$T/out" 2>&1
 RC=$?
 check "vom Techniker: frei, mit Ablauf, im Protokoll mit seinem Namen" '[[ $RC == 0 && -e $RULE ]] && grep -q -- "--on-active=30min" "$T/systemd-run.log" && grep -q "freigegeben von rescue" "$LOG"'
+check "Freischalten setzt den Merker im Kernel auf 1 (GHSA-874q-q3v7-m56v)" '[[ $(cat "$MK") == 1 ]]'
 check "der Dienst des Ablaufs erbt LD_PRELOAD und Co. nicht vom Manager (F13)" 'grep -qF -- "-p Type=oneshot -p UnsetEnvironment=$ENV_UNSAFE /usr/local/bin/lf-freigabe ablauf" "$T/systemd-run.log" && [[ $ENV_UNSAFE == "LD_PRELOAD "*" PS4" ]]'
 check "Freischalten hält Manager-Umgebung, Dateien, Kette, Einhängungen und Kernel-Einstellungen fest" 'grep -qxF "\"LANG=C.UTF-8\"" "$SNAP/menv" && grep -q " $W/etc/shadow$" "$SNAP/files" && grep -qE "^[0-9a-f]{64}  $W/usr/local/bin/lf-aufgabe$" "$SNAP/chain" && grep -qE "^gross:17825792:[0-9.]+  $W/usr/local/lib/lf/claude-cli$" "$SNAP/chain" && grep -qxF "art:l:lf-aufgabe  $W/usr/local/bin/frs-aufgabe" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CS$" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CE$" "$SNAP/chain" && grep -qxF "art:l:$W/etc/alternatives/sudo  $W/usr/bin/sudo" "$SNAP/chain" && grep -q " $W rw" "$SNAP/mounts" && grep -qxF "$T/proc/sys/kernel/core_pattern=|/usr/lib/systemd/systemd-coredump %P " "$SNAP/knobs" && [[ -e $SNAP/zeit ]]'
 check "Freischalten hält den Inhalt der Credentials fest, nur für root lesbar; ein anderes Dateisystem dort liest es nicht" 'grep -qE "^$CRED/getty@tty1.service [0-9a-f]{64}$" "$SNAP/creds" && grep -qxF "$CRED/fremd.service art:fuse.x" "$SNAP/creds" && [[ $(stat -c %a "$SNAP/creds") == 600 ]]'
@@ -810,15 +823,26 @@ kill "$P2" "$P3" "$P5" "$P1" "$P4" "$P6" "$PA" "$PB" "$PC" 2>/dev/null
 cleanproc
 
 echo "Start von lf mit einer Regel ohne Timer (#84):"
-# lf_start [ui]   claude_freigabe_ohne_timer aus claude.sh wie beim Start von lf: lf-freigabe ist die
+# lf_start [ui]   claude_freigabe_ohne_timer aus claude.sh wie beim Start von lf, mit
+#   claude_freigabe_zustand und dem Merker im Kernel in der Attrappe von /proc: lf-freigabe ist die
 #   Kopie oben, sudo führt nur aus, sleep und ui_info schreiben mit. Steht in TIMER_NACH_WARTEN ein
-#   Timer, gibt es ihn nach dem Warten (das Freischalten war noch nicht fertig). Ausgabe in
+#   Timer, gibt es ihn nach dem Warten (das Freischalten war noch nicht fertig). Steht etwas in
+#   STATUS_NACH_ABLAUF, sagt status das nach dem Ablauf (ein status, das nicht stimmt). Ausgabe in
 #   $T/start.status, Aufrufe in $T/start.log.
 lf_start() {
 	: >"$T/start.log"
+	rm -f "$T/start.ablauf"
 	(
-		eval "$(sed -n '/^claude_freigabe_ohne_timer() {$/,/^}$/p' rescue/lib/claude.sh)"
-		lf-freigabe() { bash "$F" "$@"; }
+		eval "$(sed -n '/^claude_freigabe_ohne_timer() {$/,/^}$/p;/^claude_freigabe_merker() {$/,/^}$/p;/^claude_freigabe_zustand() {$/,/^}$/p' rescue/lib/claude.sh)"
+		CLAUDE_FREIGABE_MERKER=$MK
+		lf-freigabe() {
+			if [[ $1 == status && -e $T/start.ablauf && -n ${STATUS_NACH_ABLAUF:-} ]]; then
+				echo "$STATUS_NACH_ABLAUF"
+				return 0
+			fi
+			[[ $1 == ablauf ]] && : >"$T/start.ablauf"
+			bash "$F" "$@"
+		}
 		sudo() { echo "sudo $*" >>"$T/start.log"; "$@"; }
 		run() { "$@" >>"$T/start.out" 2>&1; }
 		log() { echo "log $*" >>"$T/start.log"; }
@@ -857,6 +881,12 @@ check "kommt der Timer während des Wartens: nichts, die Freigabe gilt weiter" '
 rm -f "$T/timers.json"
 bash "$F" aus >"$T/out" 2>&1
 check "danach wieder Neustart nötig" 'neustart_n'
+# Sagt status nach dem Ende trotzdem aus, nennt der Zustand den Merker im Kernel.
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+STATUS_NACH_ABLAUF=aus lf_start
+RC=$?
+check "sagt status nach dem Ende trotzdem aus: Neustart nötig aus dem Merker im Kernel (GHSA-874q-q3v7-m56v)" '((RC == 0)) && [[ -e $T/start.ablauf && $(cat "$T/start.status") == "Neustart nötig: Der Kernel zeigt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem aus" ]]'
 cleanproc
 
 echo "aus, cgroup von Claude:"
@@ -2609,6 +2639,172 @@ check "Klassen: die Zeile nach einer Freigabe hat eine eigene, ohne Namen" '[[ $
 check "switch_hint: nach einer Freigabe am Netzschalter, auch wo sonst Beenden > Ausschalten reichte; was weiterläuft oder beim Beenden liefe, geht vor" '[[ $(hinweis "$RL") == "$FREI" && $(hinweis "$RL" "Datei geändert: $W/etc/passwd") == "$FREI" && $(hinweis "$RL" "Einheit angehalten, nicht beendet: x.service") == "${NETZ}x.service)" && $(hinweis "Einheit läuft weiter, ließ sich nicht anhalten: y.timer" "$RL") == "Sofort ausschalten: "* ]]'
 check "Selbsttest der ISO: nach Ablauf Neustart nötig, kein sudo für lf-claude, auch nicht die Grundregel, keine neue Freigabe" 'grep -qF "if [[ \$(lf-freigabe status) == \"Neustart nötig (letzte Freigabe bis \"* ]] && ! selftest_as sudo -n true 2>/dev/null &&" rescue/lf && grep -qF "[[ ! -e /etc/sudoers.d/lf-claude-freigabe && ! -e /etc/sudoers.d/lf-claude ]]; then" rescue/lf && grep -qF "if SUDO_USER=rescue lf-freigabe an 1 >/dev/null 2>&1 || [[ -e /etc/sudoers.d/lf-claude-freigabe ]]; then" rescue/lf'
 
+echo "Merker im Kernel für eine Freigabe seit dem Start (GHSA-874q-q3v7-m56v):"
+reboot_sim
+cleanproc
+rm -f "$T/timers.json" "$T/tty"
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+check "nach dem Start: der Merker ist 2, status aus" '[[ $(cat "$MK") == 2 && $(bash "$F" status) == aus ]]'
+echo 0 >"$MK"
+check "…: mit 0 ebenso aus (0 und 2 heißen: keine Freigabe seit dem Start)" '[[ $(bash "$F" status) == aus ]]'
+# Jeder andere Wert zeigt eine Freigabe, auch ein leerer und ein fehlender Merker (fail-closed).
+MKW=""
+for v in 1 3 x ""; do
+	printf '%s\n' "$v" >"$MK"
+	[[ $(bash "$F" status) == "Neustart nötig: $FREI" ]] || MKW+="[$v]"
+done
+rm -f "$MK"
+[[ $(bash "$F" status) == "Neustart nötig: $FREI" ]] || MKW+="[fehlt]"
+check "…: jeder andere Wert, auch ein leerer und ein fehlender Merker: Neustart nötig, ohne Zeit" '[[ -z $MKW ]]'
+echo 1 >"$MK"
+check "…: Merker 1 ohne die Marken unter /run: die Statuszeile von Claude Code sagt Neustart nötig" '[[ $(bash "$F" zeile </dev/null) == "Leuchtfeuer: Claude gesperrt, Neustart nötig" ]]'
+: >"$T/systemd-run.log"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "…: an lehnt ab, wie nach einer Freigabe, ohne Schnappschuss" '[[ $RC == 2 && ! -e $RULE && ! -e $SNAP && ! -s $T/systemd-run.log && $(cat "$MK") == 1 ]] && grep -qF "abgelehnt: Freischalten nach einer Freigabe, vor dem Neustart" "$LOG"'
+# Lässt sich der Merker nicht setzen (hier: nicht beschreibbar) oder fehlt er (und lässt sich nicht
+# anlegen, wie in /proc): keine Freigabe.
+echo 2 >"$MK" && chmod 0444 "$MK"
+: >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+chmod 0644 "$MK"
+check "lässt sich der Merker nicht setzen: keine Freigabe, keine Regel, kein Schnappschuss, keine Marke, mit dem Grund am Terminal und im Protokoll" '[[ $RC == 1 && ! -e $RULE && ! -e $SNAP && ! -e $T/run/claude-freigabe-zuletzt && ! -e $T/run/claude-freigabe-bis && ! -s $T/systemd-run.log && $(cat "$MK") == 2 ]] && grep -qF "Ohne ihn gibt es keine Freigabe." "$T/out" && grep -qF "abgelehnt: Freischalten ohne den Merker im Kernel ($MK ist 2)" "$LOG"'
+rm -f "$MK" && chmod 0555 "$T/proc/sys/kernel"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+chmod 0755 "$T/proc/sys/kernel"
+check "…: ebenso ohne den Merker" '[[ $RC == 1 && ! -e $RULE && ! -e $SNAP && ! -e $MK && ! -s $T/systemd-run.log ]] && grep -qF "Ohne ihn gibt es keine Freigabe." "$T/out" && grep -qF "abgelehnt: Freischalten ohne den Merker im Kernel ($MK ist nicht lesbar)" "$LOG"'
+echo 2 >"$MK"
+# root löscht während der Freigabe die Marke der letzten Freigabe, das geplante Ende und den
+# Schnappschuss, dann kommt der Ablauf.
+: >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "Freischalten setzt den Merker auf 1" '[[ $RC == 0 && -e $RULE && $(cat "$MK") == 1 ]]'
+M1=$(spawn)
+fake "$M1" 1001 1001 1 "" "claude"
+echo "0::/lf.slice/lf-claude.slice/cli.scope" >"$T/proc/$M1/cgroup"
+echo "$M1" >"$CG/cli.scope/cgroup.procs"
+rm -rf "$T/run/claude-freigabe-zuletzt" "$T/run/claude-freigabe-bis" "$SNAP"
+check "Marken und Schnappschuss gelöscht, die Regel gilt noch: an, ohne Ablauf" '[[ $(bash "$F" status) == "an, ohne Ablauf" ]]'
+bash "$F" ablauf >"$T/out" 2>&1
+RC=$?
+check "…: der Ablauf nimmt den Weg nach einer Freigabe: Grundregel vom ersten Schritt an bis zum Neustart gesperrt" '[[ $RC == 0 && ! -e $RULE ]] && hard_lock && grep -qF "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart: Freigabe seit dem Start" "$LOG" && ! grep -qF "während des Endes" "$LOG"'
+check "…: Claude ist beendet, die Marke der letzten Freigabe wieder da, status Neustart nötig mit der Zeit des Endes, der Rückstand nennt die Freigabe" '! kill -0 "$M1" 2>/dev/null && [[ $(cat "$CG/cgroup.kill" 2>/dev/null) == 1 && -s $T/run/claude-freigabe-zuletzt ]] && grep -qF "beendet: Claude (lf-claude), gesperrt bis zum Neustart" "$LOG" && neustart_n "$(head -n 1 "$R")" && grep -qxF "$RL" "$R"'
+check "…: die Sperre des Netzschalters bleibt" '! grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=active "$T/unit/$NU"'
+kill "$M1" 2>/dev/null
+# root löscht dazu die Regel selbst (root bleibt in einem Prozess), und kein Ende läuft: Was sagen
+# status, an und ein späteres aus?
+reboot_sim
+cleanproc
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+M2=$(spawn)
+fake "$M2" 1001 1001 1 "" "claude"
+echo "0::/lf.slice/lf-claude.slice/cli.scope" >"$T/proc/$M2/cgroup"
+echo "$M2" >"$CG/cli.scope/cgroup.procs"
+rm -rf "$RULE" "$T/run/claude-freigabe-zuletzt" "$T/run/claude-freigabe-bis" "$SNAP"
+check "alle Marken gelöscht, auch die Regel: status Neustart nötig, ohne Zeit" '[[ $(bash "$F" status) == "Neustart nötig: $FREI" ]]'
+check "…: die Statuszeile von Claude Code sagt es" '[[ $(bash "$F" zeile </dev/null) == "Leuchtfeuer: Claude gesperrt, Neustart nötig" ]]'
+: >"$T/systemd-run.log"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "…: an lehnt eine neue Freigabe ab" '[[ $RC == 2 && ! -e $RULE && ! -e $SNAP && ! -s $T/systemd-run.log ]] && grep -qF "abgelehnt: Freischalten nach einer Freigabe, vor dem Neustart" "$LOG"'
+bash "$F" aus >"$T/out" 2>&1
+RC=$?
+check "…: ein aus danach nimmt den Weg nach einer Freigabe: bis zum Neustart gesperrt, Claude beendet, Neustart nötig" '[[ $RC == 0 ]] && hard_lock && ! kill -0 "$M2" 2>/dev/null && [[ $(cat "$CG/cgroup.kill" 2>/dev/null) == 1 && -s $T/run/claude-freigabe-zuletzt ]] && grep -qxF "$RL" "$R" && neustart_n "$(head -n 1 "$R")" && ! grep -qF -e "während des Endes" -e "Claude läuft weiter" -e "WARNUNG" "$LOG"'
+check "…: die Sperre des Netzschalters bleibt" '! grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=active "$T/unit/$NU"'
+kill "$M2" 2>/dev/null
+: >"$CG/cli.scope/cgroup.procs"
+# root ersetzt die Marke der letzten Freigabe durch eine Verknüpfung ins Leere (das Ende kann sie
+# nicht wieder anlegen), und eine Einheit aus der Freigabe schiebt die gesperrte Grundregel während
+# des Endes zurück (nur in der Attrappe von systemctl): Jeder Schritt des Endes folgt dem Merker.
+reboot_sim
+cleanproc
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+M4=$(spawn)
+fake "$M4" 1001 1001 1 "" "claude"
+echo "0::/lf.slice/lf-claude.slice/cli.scope" >"$T/proc/$M4/cgroup"
+echo "$M4" >"$CG/cli.scope/cgroup.procs"
+rm -f "$T/run/claude-freigabe-zuletzt" && ln -s "$T/nicht-da/zuletzt" "$T/run/claude-freigabe-zuletzt"
+unit f1-zurueck.service no /system.slice/f1-zurueck.service
+touch "$T/sperre-zurueck-bei-f1-zurueck.service"
+bash "$F" aus >"$T/out" 2>&1
+RC=$?
+rm -f "$T/sperre-zurueck-bei-f1-zurueck.service"
+check "Marke nicht wieder anzulegen, Grundregel während des Endes zurückgeschoben: vom ersten Schritt an und wieder bis zum Neustart gesperrt" '[[ $RC == 0 && ! -e $T/run/claude-freigabe-zuletzt ]] && grep -qxF "freeze f1-zurueck.service" "$T/systemctl.log" && hard_lock && grep -qF "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart: Freigabe seit dem Start" "$LOG" && grep -qF "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart: Rückstand am Ende" "$LOG" && ! grep -qF "während des Endes" "$LOG"'
+check "…: Claude beendet, der Rückstand nennt die Freigabe, das Protokoll sagt Neustart nötig, status auch, ohne Zeit" '! kill -0 "$M4" 2>/dev/null && grep -qF "beendet: Claude (lf-claude), gesperrt bis zum Neustart" "$LOG" && grep -qxF "$RL" "$R" && grep -qF "Neustart nötig: Claude (lf-claude) bleibt bis zum Neustart gesperrt" "$LOG" && ! grep -qF -e "WARNUNG" -e "Claude läuft weiter" "$LOG" && [[ $(bash "$F" status) == "Neustart nötig: $(head -n 1 "$R")" ]]'
+kill "$M4" 2>/dev/null
+: >"$CG/cli.scope/cgroup.procs"
+rm -f "$T/run/claude-freigabe-zuletzt"
+awk '$1 != "f1-zurueck.service"' "$T/units" >"$T/units.neu" && mv "$T/units.neu" "$T/units"
+# zustand PID   Der echte Zustand eines Prozesses dieses Tests (T: angehalten).
+zustand() { awk '$1 == "State:" {print $2}' "/proc/$1/status" 2>/dev/null; }
+# Ein Prozess von lf-claude außerhalb der cgroups von Claude (root hat ihn während der Freigabe
+# verschoben): Nach einer Freigabe hält ihn das Ende gleich nach dem Entfernen der Regel an.
+reboot_sim
+cleanproc
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+O2=$(spawn)
+fake "$O2" 1001 1001 1 "" "sleep 300"
+echo "0::/system.slice/f2.service" >"$T/proc/$O2/cgroup"
+bash "$F" aus >"$T/out" 2>&1
+RC=$?
+check "lf-claude außerhalb seiner cgroups: gleich nach dem Entfernen der Regel angehalten, vor allem anderen, am Schluss beendet" 'a=$(line "Ende der Freigabe: Regel entfernt") b=$(line "angehalten: Prozesse von lf-claude außerhalb seiner cgroups: $O2") c=$(line "Ende der Freigabe: Lader, Kette"); [[ $RC == 0 && -n $a && -n $b && -n $c ]] && ((a < b && b < c)) && ! kill -0 "$O2" 2>/dev/null'
+# Bricht das Ende hart ab (KILL beim Anhalten einer Einheit, nur in der Attrappe von systemctl), läuft
+# die Falle für EXIT nicht: Der Prozess bleibt angehalten, die cgroups von Claude auch.
+reboot_sim
+cleanproc
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+O1=$(spawn) M3=$(spawn)
+fake "$O1" 1001 1001 1 "" "sleep 300"
+echo "0::/system.slice/f2.service" >"$T/proc/$O1/cgroup"
+fake "$M3" 1001 1001 1 "" "claude"
+echo "0::/lf.slice/lf-claude.slice/cli.scope" >"$T/proc/$M3/cgroup"
+echo "$M3" >"$CG/cli.scope/cgroup.procs"
+unit f2-abbruch.service no /system.slice/f2-abbruch.service
+touch "$T/abbruch-bei-f2-abbruch.service"
+bash "$F" aus >"$T/out" 2>&1
+RC=$?
+rm -f "$T/abbruch-bei-f2-abbruch.service"
+check "ein Ende, das hart abbricht (KILL): lf-claude außerhalb seiner cgroups ist schon angehalten (STOP), nicht beendet" '[[ $RC == 137 ]] && kill -0 "$O1" 2>/dev/null && [[ $(zustand "$O1") == T ]] && grep -qE "angehalten: Prozesse von lf-claude außerhalb seiner cgroups: $O1\$" "$LOG"'
+check "…: die cgroups von Claude bleiben angehalten, darin hält das Ende nichts mit STOP an; bis zum Neustart gesperrt, status Neustart nötig mit dem abgebrochenen Ende" '[[ $(cat "$CG/cgroup.freeze") == 1 && $(zustand "$M3") != T ]] && hard_lock && [[ $(head -n 1 "$R") == "Prüfung des Rückstands nicht abgeschlossen, Ende seit "* ]] && neustart_n "$(head -n 1 "$R")"'
+kill -KILL "$O1" "$M3" 2>/dev/null
+: >"$CG/cli.scope/cgroup.procs"
+awk '$1 != "f2-abbruch.service"' "$T/units" >"$T/units.neu" && mv "$T/units.neu" "$T/units"
+# Ohne Freigabe seit dem Start hält das Ende nichts mit STOP an.
+reboot_sim
+cleanproc
+: >"$T/systemctl.log" && : >"$LOG"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+O3=$(spawn)
+fake "$O3" 1001 1001 1 "" "sleep 300"
+echo "0::/system.slice/f2.service" >"$T/proc/$O3/cgroup"
+bash "$F" aus >"$T/out" 2>&1
+check "ohne Freigabe seit dem Start: lf-claude außerhalb seiner cgroups läuft weiter" 'kill -0 "$O3" 2>/dev/null && [[ $(zustand "$O3") != T ]] && ! grep -qF "angehalten: Prozesse von lf-claude" "$LOG" && [[ $(cat "$MK") == 2 ]]'
+kill "$O3" 2>/dev/null
+reboot_sim
+cleanproc
+check "Image: eine eigene Datei setzt den Merker beim Start auf 2, keine andere im Overlay setzt ihn" '[[ $(grep -vE "^[[:space:]]*(#|$)" build/overlay/etc/sysctl.d/90-lf-freigabe.conf 2>/dev/null) == "kernel.unprivileged_bpf_disabled = 2" && $(grep -rlE "^[[:space:]]*kernel[./]unprivileged_bpf_disabled" build/overlay) == build/overlay/etc/sysctl.d/90-lf-freigabe.conf ]]'
+check "lf-freigabe und claude.sh lesen denselben Merker, claude.sh nur mit read in seinem Prozess, lf-freigabe schreibt ihn nur in mark_grant" '[[ $(sed -n "s/^MERKER=//p" rescue/bin/lf-freigabe) == /proc/sys/kernel/unprivileged_bpf_disabled && $(sed -n "s/^CLAUDE_FREIGABE_MERKER=\${LF_FREIGABE_MERKER:-\(.*\)}$/\1/p" rescue/lib/claude.sh) == /proc/sys/kernel/unprivileged_bpf_disabled ]] && grep -qxF "	{ read -r v <\"\$CLAUDE_FREIGABE_MERKER\"; } 2>/dev/null" rescue/lib/claude.sh && [[ $(grep -v "^[[:space:]]*#" rescue/lib/claude.sh | grep -c "CLAUDE_FREIGABE_MERKER") == 2 && $(grep -v "^[[:space:]]*#" rescue/bin/lf-freigabe | grep -c ">\"\$MERKER\"") == 1 ]] && grep -qxF "	{ echo 1 >\"\$MERKER\"; } 2>/dev/null" rescue/bin/lf-freigabe && ! grep -q "/proc/sys/kernel/unprivileged_bpf_disabled" rescue/lf'
+check "Selbsttest der ISO: Merker vor dem Freischalten 2, danach und nach dem Ablauf 1, nur gelesen" 'grep -qF "echo \"LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)\"" rescue/lf && grep -qxF "	if [[ \$m0 == 2 && \$m1 == 1 && \$m2 == 1 ]]; then" rescue/lf && [[ $(grep -c "m[012]=\$(claude_freigabe_merker)" rescue/lf) == 3 ]]'
+check "Hardware-Prüfung: der Selbsttest zeigt den Merker, wie im Code" 'grep -qF "\`LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)\`" docs/hardware-pruefung.md'
+
 echo "Hinweise für Techniker und Claude:"
 check "Anleitung: ein kurzer Druck tut nichts, ab dem ersten Schritt des Endes bis zum Neustart; Gedrückthalten bricht Schreiben auf angeschlossene Disks ab; Strg+Alt+Entf ohne Wirkung" 'grep -qF "Ein kurzer Druck tut dann nichts: Vom ersten Schritt des Endes an sperrt Leuchtfeuer den Netzschalter und die Tasten für Neustart und Ruhezustand bis zum Neustart. Erst Gedrückthalten schaltet aus." docs/anleitung.md && grep -qF "der Hinweis sagt, dass schon ein kurzer Druck geordnet herunterfährt." docs/anleitung.md && grep -qF "Gedrückthalten nimmt den Strom sofort: Was gerade auf angeschlossene Disks schreibt, bricht ab, auch eine Rettung von lf-aufgabe, die nach dem Ende weiterläuft." docs/anleitung.md && grep -qF "**Strg+Alt+Entf** startet auf Leuchtfeuer keinen Neustart, auch mehrmals schnell hintereinander nicht." docs/anleitung.md'
 check "Anleitung und Code: der Hinweis über Beenden > Ausschalten nennt einen Weg zu root, LF-DATA hat einen eigenen Hinweis" 'grep -qF "Bleibt sonst ein Weg zu root aus der Freigabe, für Claude oder jeden anderen," docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): Weg zu root aus der Freigabe (" rescue/bin/lf-freigabe && grep -qF "Prüfe LF-DATA dann vor dem nächsten Entsperren oder lege den Speicher neu an." docs/anleitung.md && grep -qF "vor dem nächsten Entsperren prüfen oder neu anlegen\"" rescue/bin/lf-freigabe'
@@ -2646,11 +2842,13 @@ echo "Menü Claude-Freigabe (#92):"
 # menue STATUS WAHL JANEIN [MINUTEN] [DANACH]   claude_freigabe_menu aus rescue/lib/claude.sh mit
 #   Attrappen: lf-freigabe status sagt STATUS, nach einem Aufruf von sudo DANACH (falls angegeben),
 #   ui_menu wählt WAHL (leer: Abbruch), ui_yesno gibt JANEIN zurück, ui_input gibt MINUTEN (leer:
-#   Abbruch). Dialoge und sudo schreiben nach $T/menue.
+#   Abbruch). Dialoge und sudo schreiben nach $T/menue. Der Merker im Kernel ist $T/merker (Vorgabe 2).
+echo 2 >"$T/merker"
 menue() {
 	: >"$T/menue"
 	(
 		ms=$1 mw=$2 mj=$3 mm=${4:-} mn=${5:-}
+		LF_FREIGABE_MERKER=$T/merker
 		lf-freigabe() { [[ $1 == status ]] && echo "$ms"; }
 		sudo() { echo "sudo $*" >>"$T/menue"; [[ -z $mn ]] || ms=$mn; }
 		run() { "$@"; }
@@ -2713,7 +2911,7 @@ assistent() {
 			echo cage >>"$T/assistent"
 			[[ -z $danach ]] || printf '%s\n' "$danach" >"$T/st"
 		}
-		LF_RUN=$T/lf-run LF_LOG=$T/lf.log LF_LIB=$T/lf-lib
+		LF_RUN=$T/lf-run LF_LOG=$T/lf.log LF_LIB=$T/lf-lib LF_FREIGABE_MERKER=$T/merker
 		# shellcheck disable=SC1091
 		. rescue/lib/claude.sh
 		claude_context() { echo kontext >>"$T/assistent"; }
@@ -2763,6 +2961,32 @@ assistent "$NN" claude_update_bg
 sleep 1
 check "…: nach einer Freigabe nicht, bis zum Neustart läuft nichts als lf-claude" '[[ ! -s $T/assistent ]]'
 check "der Freigabe-Dialog sagt vorher, dass Leuchtfeuer am Ende auch Claude beendet und Claude erst nach einem Neustart wieder startet" 'grep -qF "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben, und dann Claude selbst. Claude startet erst nach einem Neustart wieder:" rescue/lib/claude.sh'
+# Der Merker im Kernel, gelesen im Menü selbst (GHSA-874q-q3v7-m56v): Sagt lf-freigabe "aus", obwohl er
+# eine Freigabe seit dem Start zeigt, gilt das wie nach einer Freigabe.
+KZ="Neustart nötig: Der Kernel zeigt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem aus"
+echo 1 >"$T/merker"
+assistent aus claude_start
+check "Merker 1, lf-freigabe sagt aus: Claude (CLI) startet nicht, sagt Neustart nötig, mit dem Zustand" '[[ $(folge_a) == "meldung " ]] && grep -qF "meldung $GESPERRT$KZ" "$T/assistent"'
+assistent aus claude_desktop
+check "…: Claude Desktop ebenso" '[[ $(folge_a) == "meldung " ]] && grep -qF "meldung $GESPERRT$KZ" "$T/assistent"'
+assistent aus claude_freigabe_hinweis
+check "…: das Hauptmenü sagt Neustart nötig" '[[ $(cat "$T/assistent.out") == "ACHTUNG: Neustart nötig. Claude bleibt bis dahin gesperrt. Ausschalten: Netzschalter gedrückt halten, bis das Gerät aus ist" ]]'
+assistent aus claude_update_bg
+sleep 1
+check "…: die CLI wird nicht als lf-claude aktualisiert" '[[ ! -s $T/assistent ]]'
+menue aus "" 1
+check "…: das Menü der Freigabe bietet keine neue an" '[[ $(folge) == "meldung " ]] && grep -qF "meldung Eine neue Freigabe gibt es erst nach dem Neustart. $GESPERRT$KZ" "$T/menue"'
+menue "an bis 20:30" aus 1 "" aus
+check "…: Sofort beenden, danach sagt lf-freigabe aus: der Dialog sagt Neustart nötig" '[[ $(folge) == "menü sudo meldung " ]] && grep -qF "meldung Die Freigabe ist beendet. $GESPERRT$KZ" "$T/menue"'
+assistent "an bis 20:30" claude_start
+check "…: während einer Freigabe startet Claude wie sonst" '[[ $(folge_a) == "info kontext claude " ]]'
+rm -f "$T/merker"
+assistent aus claude_start
+check "ohne lesbaren Merker: Claude startet nicht" '[[ $(folge_a) == "meldung " ]] && grep -qF "meldung $GESPERRT$KZ" "$T/assistent"'
+echo 0 >"$T/merker"
+assistent aus claude_start
+check "Merker 0: Claude startet wie bisher" '[[ $(folge_a) == "info kontext claude " ]]'
+echo 2 >"$T/merker"
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

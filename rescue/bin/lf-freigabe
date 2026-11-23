@@ -58,6 +58,10 @@
 # bis zum Neustart gesperrt, am Schluss beendet das Ende jeden Prozess von lf-claude, eine neue
 # Freigabe gibt es erst nach dem Neustart, und bis dahin sagt status "Neustart nötig (letzte Freigabe
 # bis HH:MM): …", mit dem Hinweis, am Netzschalter auszuschalten. Sicher endet root-Zugriff nur so.
+# Dass es eine Freigabe gab, hält "an" vor der Regel auch im Kernel fest (MERKER), und das nimmt bis
+# zum Neustart niemand zurück, auch root nicht: Löscht root während der Freigabe die Marken unter
+# /run, nimmt das Ende trotzdem diesen Weg. Prozesse von lf-claude außerhalb seiner cgroups hält es
+# gleich nach dem Entfernen der Regel an.
 # Ein Ende ohne Freigabe seit dem Start (aus) sperrt die Grundregel mit Rückstand nur, bis ein Ende
 # ohne Rückstand abschließt, und bis zum Neustart, wenn sich geändert haben kann, was sie als root
 # ausführt oder lädt (lock_lines).
@@ -98,8 +102,8 @@ TTY=/dev/tty
 RESIDUE=/run/lf/claude-freigabe-rueckstand
 # Die erste Zeile im Rückstand, solange ein Ende läuft (off). Bricht es ab, bleibt sie stehen.
 END_OPEN="Prüfung des Rückstands nicht abgeschlossen"
-# Die Zeile im Rückstand nach einer Freigabe seit dem Start (LAST): Claude bleibt bis zum Neustart
-# gesperrt, und der Hinweis sagt, am Netzschalter auszuschalten (GHSA-874q-q3v7-m56v).
+# Die Zeile im Rückstand nach einer Freigabe seit dem Start (granted_since_boot): Claude bleibt bis
+# zum Neustart gesperrt, und der Hinweis sagt, am Netzschalter auszuschalten (GHSA-874q-q3v7-m56v).
 REBOOT_LINE="Freigabe seit dem Start: Code aus ihr kann bis zum Neustart in jedem Programm als root mitlaufen"
 BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
 # Blockgeräte, die der Kernel kennt (Quellen, die kept_unit gelten lässt).
@@ -270,8 +274,14 @@ BASE_FILE=/etc/sudoers.d/lf-claude
 # Wann die letzte Freigabe endete: Gibt es die Marke, gab es seit dem Start eine Freigabe (/run liegt
 # im RAM), und Claude bleibt bis zum Neustart gesperrt (GHSA-874q-q3v7-m56v). an legt sie schon mit
 # dem geplanten Ende an (auch ein abgebrochenes Ende hinterlässt dann kein blankes "aus"), off
-# schreibt das tatsächliche.
+# schreibt das tatsächliche. Root kann die Marke während der Freigabe löschen, darum zählt auch der
+# Merker (granted_since_boot).
 LAST=/run/lf/claude-freigabe-zuletzt
+# Der Merker im Kernel für eine Freigabe seit dem Start: Beim Start ist unprivilegiertes BPF aus und
+# der Wert 2 (build/overlay/etc/sysctl.d/90-lf-freigabe.conf), "an" setzt vor der Regel 1. Von 1 lässt
+# der Kernel ihn bis zum Neustart nicht mehr zurücksetzen, auch nicht für root. Gelesen wird er mit
+# read, ohne neues Programm, auch im Menü (claude_freigabe_zustand in claude.sh).
+MERKER=/proc/sys/kernel/unprivileged_bpf_disabled
 # Die Sperre bei logind (systemd-inhibit, Modus block) für den Netzschalter, die Tasten für Neustart,
 # Bereitschaft und Ruhezustand, den Deckelschalter und den Ruhezustand selbst. Ohne sie startete ein
 # kurzer Druck auf den Netzschalter ein geordnetes Ausschalten (logind.conf des Images ist leer:
@@ -776,11 +786,87 @@ stop_claude() {
 	return 0
 }
 
+# claude_outside   Die Prozesse aus claude_pids außerhalb der cgroups von Claude, etwa einer, den root
+#   während der Freigabe in eine andere cgroup verschoben hat. Lässt sich die cgroup eines Prozesses
+#   nicht lesen, zählt er dazu.
+claude_outside() {
+	local pid own cg in
+	local -a cgs
+	mapfile -t cgs < <(claude_cgroups)
+	while IFS= read -r pid; do
+		own=$(sed -n 's/^0:://p' "/proc/$pid/cgroup" 2>/dev/null)
+		in=0
+		for cg in "${cgs[@]}"; do
+			cg=${cg#"$CGROOT"}
+			[[ -n $own && ($own == "$cg" || $own == "$cg"/*) ]] && in=1 && break
+		done
+		((in)) || echo "$pid"
+	done < <(claude_pids)
+	return 0
+}
+
+# hold_claude_outside   Nach einer Freigabe gleich nach dem Entfernen der Regel (GHSA-874q-q3v7-m56v):
+#   hält jeden Prozess von lf-claude außerhalb der angehaltenen cgroups von Claude an (STOP), höchstens
+#   2 Sekunden lang, solange neue dazukommen. Sonst liefen sie bis zum Schluss des Endes weiter, nach
+#   einem harten Abbruch (KILL) bis zum Ausschalten. Angehalten, nicht beendet: Endete der
+#   Hauptprozess einer Einheit, führte systemd als root aus, was beim Beenden der Einheit läuft. Am
+#   Schluss beendet sie stop_claude.
+hold_claude_outside() {
+	local i n pid
+	local -a got=()
+	local -A seen=()
+	for ((i = 0; i < 20; i++)); do
+		n=0
+		while IFS= read -r pid; do
+			[[ -n ${seen[$pid]:-} ]] && continue
+			seen[$pid]=1
+			kill -STOP "$pid" 2>/dev/null
+			got+=("$pid")
+			n=$((n + 1))
+		done < <(claude_outside)
+		((n)) || break
+		sleep 0.1
+	done
+	((${#got[@]})) && note "angehalten: Prozesse von $CLAUDE außerhalb seiner cgroups: ${got[*]}" >/dev/null
+	return 0
+}
+
+# merker   Der Wert des Merkers im Kernel (MERKER), leer, wenn er sich nicht lesen lässt.
+merker() {
+	local v=''
+	{ read -r v <"$MERKER"; } 2>/dev/null
+	echo "$v"
+}
+
+# granted_since_boot   Gab es seit dem Start eine Freigabe (GHSA-874q-q3v7-m56v)? Das zeigen LAST oder
+#   der Merker im Kernel, mit jedem Wert außer 0 und 2, auch wenn er sich nicht lesen lässt.
+granted_since_boot() {
+	[[ -e $LAST ]] && return 0
+	case $(merker) in 0 | 2) return 1 ;; esac
+	return 0
+}
+
+# mark_grant   Setzt den Merker im Kernel auf 1 ("an", vor der Regel). Rückgabe 1, wenn er danach nicht
+#   1 ist.
+mark_grant() {
+	{ echo 1 >"$MERKER"; } 2>/dev/null
+	[[ $(merker) == 1 ]]
+}
+
+# no_merker   Ohne den Merker im Kernel gibt es keine Freigabe: Meldung, Protokoll, Ende mit 1.
+no_merker() {
+	local v
+	v=$(merker)
+	note "abgelehnt: Freischalten ohne den Merker im Kernel ($MERKER ist ${v:-nicht lesbar})" >/dev/null
+	echo "lf-freigabe: Der Merker für die Freigabe im Kernel ($MERKER) ist nicht lesbar, ungültig oder lässt sich nicht setzen. Ohne ihn gibt es keine Freigabe." >&2
+	exit 1
+}
+
 # end_claude   Der letzte Schritt von off, auch wenn es abbricht (trap EXIT): Nach einer Freigabe
-#   seit dem Start (LAST) beendet er Claude ganz (stop_claude), sonst laufen die cgroups von Claude
-#   weiter.
+#   seit dem Start (granted_since_boot) beendet er Claude ganz (stop_claude), sonst laufen die cgroups
+#   von Claude weiter.
 end_claude() {
-	if [[ -e $LAST ]]; then stop_claude; else cg_freeze 0; fi
+	if granted_since_boot; then stop_claude; else cg_freeze 0; fi
 }
 
 # Die Arten von Einheiten mit eigenen Prozessen oder Auslösern. Geräte, Einhängungen, Swap, Slices
@@ -2934,10 +3020,10 @@ residue() {
 }
 
 # residue_lines EFI   Die Zeilen von residue ohne die Hinweise, EFI: efivars_changed. Gab es seit
-#   dem Start eine Freigabe (LAST), steht zuerst REBOOT_LINE (GHSA-874q-q3v7-m56v).
+#   dem Start eine Freigabe (granted_since_boot), steht zuerst REBOOT_LINE (GHSA-874q-q3v7-m56v).
 residue_lines() {
 	local rules procs c l e=$1
-	[[ -e $LAST ]] && echo "$REBOOT_LINE"
+	granted_since_boot && echo "$REBOOT_LINE"
 	[[ -e $LOCK_FAILED ]] && echo "Grundregel ließ sich nicht sperren: $BASE_FILE"
 	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
 	case $(lock_kind) in
@@ -3012,11 +3098,12 @@ timer_end() {
 	echo $((next / 1000000))
 }
 
-# status   "an", solange die Regel besteht. Gab es seit dem Start eine Freigabe (LAST), danach bis
-#   zum Neustart "Neustart nötig (letzte Freigabe bis HH:MM): " und die erste Zeile des Rückstands
-#   (GHSA-874q-q3v7-m56v): Keine Prüfung findet jeden Weg, und Code aus der Freigabe kann in jedem
-#   Programm mitlaufen, das danach startet, auch in dieser Prüfung. Ohne Freigabe nur "aus", wenn
-#   auch kein Timer läuft und kein anderer Weg zu root zu sehen ist, sonst "an: Rückstand …".
+# status   "an", solange die Regel besteht. Gab es seit dem Start eine Freigabe (granted_since_boot),
+#   danach bis zum Neustart "Neustart nötig (letzte Freigabe bis HH:MM): " und die erste Zeile des
+#   Rückstands (GHSA-874q-q3v7-m56v), ohne LAST "Neustart nötig: …": Keine Prüfung findet jeden Weg,
+#   und Code aus der Freigabe kann in jedem Programm mitlaufen, das danach startet, auch in dieser
+#   Prüfung. Ohne Freigabe nur "aus", wenn auch kein Timer läuft und kein anderer Weg zu root zu sehen
+#   ist, sonst "an: Rückstand …".
 status() {
 	local end r t
 	if [[ -e $RULE ]]; then
@@ -3027,7 +3114,7 @@ status() {
 		fi
 		return 0
 	fi
-	if [[ -e $LAST ]]; then
+	if granted_since_boot; then
 		r=$({ [[ -s $RESIDUE ]] && head -n 1 "$RESIDUE"; } 2>/dev/null)
 		[[ -n $r ]] || r=$(switch_hint <<<"$REBOOT_LINE")
 		t=$(head -c 20 "$LAST" 2>/dev/null)
@@ -3088,21 +3175,23 @@ stop_late() {
 off() {
 	local r l old had=0
 	# Gab es eine Freigabe? Dann bleibt Claude danach bis zum Neustart gesperrt (LAST). "an" legt
-	# LAST schon beim Freischalten an; fehlt es trotzdem, gleich hier.
+	# LAST schon beim Freischalten an; fehlt es trotzdem, gleich hier. Das gilt auch, wenn nur noch
+	# der Merker im Kernel die Freigabe zeigt: Die Marken unter /run kann root löschen.
 	[[ -e $RULE || -e $UNTIL || (-e $SNAP/units && ! -e $LAST) ]] && had=1
+	[[ ! -e $LAST ]] && granted_since_boot && had=1
 	if ((had)) && [[ ! -e $LAST ]]; then
 		install -d /run/lf
 		date +%s >"$LAST" && chmod 0644 "$LAST"
 	fi
 	# Als Erstes, vor allem Anhalten und Beenden: die Grundregel sperren und als erste Zeile des
 	# Rückstands festhalten, dass die Prüfung nicht abgeschlossen ist. Nach einer Freigabe seit dem
-	# Start (LAST) bis zum Neustart (GHSA-874q-q3v7-m56v): Code aus ihr kann in jedem Programm
+	# Start (granted_since_boot) bis zum Neustart (GHSA-874q-q3v7-m56v): Code aus ihr kann in jedem Programm
 	# mitlaufen, das danach startet, auch in diesem Ende, seinen Werkzeugen und sudo, und sich vor
 	# jeder Prüfung verbergen. Ohne Freigabe (ein "aus" ohne "an") bis ein Ende ohne Rückstand
 	# abschließt (base_lock ende, base_unlock). Bricht das Ende ab (KILL, soft-reboot, Stromausfall),
 	# bleibt beides, und was aus der Freigabe noch läuft, ist offen: Die Zeile sagt darum auch, am
 	# Netzschalter auszuschalten (wie switch_hint). Erst ein Ende, das abschließt, ersetzt die Zeile.
-	if [[ -e $LAST ]]; then base_lock "Freigabe seit dem Start"; else base_lock "Ende der Freigabe" ende; fi
+	if granted_since_boot; then base_lock "Freigabe seit dem Start"; else base_lock "Ende der Freigabe" ende; fi
 	install -d /run/lf
 	old=$(awk -v p="$END_OPEN" 'index($0, p) != 1' "$RESIDUE" 2>/dev/null)
 	{
@@ -3124,6 +3213,8 @@ off() {
 	trace "Ende der Freigabe: Claude angehalten"
 	rm -f "$RULE" "$UNTIL"
 	trace "Ende der Freigabe: Regel entfernt"
+	# Nach einer Freigabe gleich danach: was von lf-claude außerhalb der angehaltenen cgroups läuft.
+	granted_since_boot && hold_claude_outside
 	# Was jedes Programm lädt und was die Grundregel ausführt, vor allem anderen: Danach läuft keine
 	# Bibliothek aus ld.so.preload mehr mit und kein geändertes lf-aufgabe. Dann, wohin ein Neustart
 	# statt neu zu starten springen könnte. Dann die Schlüssel von LF-SSH, falls sich dort etwas
@@ -3171,7 +3262,7 @@ off() {
 	# prüfen. Lässt sie sich wieder nicht sperren, steht das im Rückstand und im Hinweis aufs
 	# Ausschalten (residue_lines).
 	if [[ -n $r && -z $(lock_kind) ]]; then
-		if [[ -e $LAST ]]; then base_lock "Rückstand am Ende"; else base_lock "Rückstand am Ende" ende; fi
+		if granted_since_boot; then base_lock "Rückstand am Ende"; else base_lock "Rückstand am Ende" ende; fi
 		r=$(end_residue)
 	fi
 	if [[ -z $r ]] && ! base_unlock; then
@@ -3191,7 +3282,7 @@ off() {
 		install -d /run/lf
 		printf '%s\n' "$r" >"$RESIDUE"
 		chmod 0644 "$RESIDUE"
-		if [[ -e $LAST ]]; then
+		if granted_since_boot; then
 			note "Neustart nötig: Claude ($CLAUDE) bleibt bis zum Neustart gesperrt (${r//$'\n'/; })"
 		else
 			note "WARNUNG: lf-claude darf nach der Freigabe noch mehr als lf-lesen und lf-aufgabe: ${r//$'\n'/; }. Neustart empfohlen"
@@ -3213,7 +3304,7 @@ off() {
 	# (stop_claude), und Claude bleibt bis zum Neustart gesperrt. Ohne Freigabe läuft Claude weiter.
 	end_claude
 	trap - EXIT
-	if [[ -e $LAST ]]; then
+	if granted_since_boot; then
 		trace "Ende der Freigabe: Claude beendet, gesperrt bis zum Neustart"
 	else
 		trace "Ende der Freigabe: Claude läuft weiter"
@@ -3239,8 +3330,10 @@ an)
 	[[ $min =~ ^[0-9]{1,3}$ ]] && ((10#$min >= 1 && 10#$min <= 240)) || { echo "lf-freigabe: MINUTEN 1 bis 240" >&2; exit 2; }
 	min=$((10#$min))
 	# Nach einer Freigabe gibt es bis zum Neustart keine neue (GHSA-874q-q3v7-m56v): Code aus der
-	# letzten kann in jedem Programm als root mitlaufen, auch in diesem. Verlängern geht weiter.
-	if [[ ! -e $RULE ]] && { [[ -e $LAST ]] || [[ $(lock_kind) == neustart ]]; }; then
+	# letzten kann in jedem Programm als root mitlaufen, auch in diesem. Verlängern geht weiter. Ohne
+	# LAST und ohne lesbaren Merker im Kernel gibt es keine Freigabe.
+	if [[ ! -e $RULE ]] && { granted_since_boot || [[ $(lock_kind) == neustart ]]; }; then
+		[[ -e $LAST || $(merker) == [012] ]] || no_merker
 		note "abgelehnt: Freischalten nach einer Freigabe, vor dem Neustart" >/dev/null
 		echo "lf-freigabe: Nach einer Freigabe gibt es bis zum Neustart keine neue. Netzschalter gedrückt halten, bis das Gerät aus ist, dann wieder einschalten." >&2
 		exit 2
@@ -3259,6 +3352,8 @@ an)
 			exit 2
 		fi
 	fi
+	# Vor der Regel und vor allem anderen: der Merker im Kernel für eine Freigabe seit dem Start.
+	mark_grant || no_merker
 	install -d /run/lf
 	if is_off "$s" || [[ ! -f $SNAP/units ]]; then snapshot; fi
 	tmp=$(mktemp /etc/sudoers.d/.lf-claude-freigabe.XXXXXX)
