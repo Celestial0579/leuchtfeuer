@@ -11,6 +11,7 @@
 #     des squashfs und hängt es unter /run/lf-medium ein. Nur dieses Verzeichnis nennt das
 #     Bootmenü (live-media=/run/lf-medium). Die Summe kommt nach dem squashfs in die initrd.
 #   - LIVEMEDIA_TIMEOUT in /etc/casper.conf verhindert, dass casper alle Blockgeräte durchsucht.
+# Dazu steht der Countdown im Bootmenü lesbar unter dem Balken, nicht darin (#127).
 # Der Test prüft, dass der Build all das tut. Ob es in der gebauten ISO wirkt, prüfen der
 # Selbsttest der ISO (selftest_boot) und die Boot-Tests (tests/qemu-smoke.sh, mit fremder Disk).
 set -u
@@ -81,5 +82,31 @@ check "UUID und Prüfsumme kommen als cpio-Archiv vor die initrd" 'grep -q "cat 
 echo "Der Selbsttest prüft die initrd und das gewählte Medium des gebauten Systems:"
 check "selftest_boot läuft im Selbsttest" 'grep -q "selftest_boot \"\$dir\" || ok=0" rescue/lf'
 check "der Boot-Test der CI startet mit einer fremden Disk, die sich als Stick ausgibt" 'grep -q "^foreign() {" tests/qemu-smoke.sh && grep -q "uefi-usb" .github/workflows/build.yml'
+
+echo "Bootmenü: Der Countdown steht lesbar unter dem Balken (#127):"
+THEME=build/grub/theme/theme.txt
+# komponente TYP   Die Zeilen der Komponente TYP mit der id __timeout__, ohne Einrückung.
+komponente() {
+	awk -v t="+ $1 {" '$0 == t { b = ""; drin = 1; next }
+		drin && /^}/ { if (b ~ /id = "__timeout__"/) printf "%s", b; drin = 0; next }
+		drin { sub(/^\t/, ""); b = b $0 "\n" }' "$THEME"
+}
+# wert NAME TEXT   Der Wert von NAME in den Zeilen TEXT, ohne Anführungszeichen.
+wert() { sed -n "s/^$1 = //p" <<<"$2" | tr -d '"'; }
+# kontrast FARBE FARBE   Kontrastverhältnis nach WCAG 2 zweier Farben #RRGGBB.
+kontrast() {
+	[[ $1 =~ ^#[0-9A-Fa-f]{6}$ && $2 =~ ^#[0-9A-Fa-f]{6}$ ]] || return 1
+	LC_ALL=C awk -v a="$1" -v b="$2" 'function lin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4 }
+		function hex(s, i) { return index("0123456789abcdef", tolower(substr(s, i, 1))) - 1 }
+		function lum(s) { return 0.2126 * lin(hex(s, 2) * 16 + hex(s, 3)) + 0.7152 * lin(hex(s, 4) * 16 + hex(s, 5)) + 0.0722 * lin(hex(s, 6) * 16 + hex(s, 7)) }
+		BEGIN { x = lum(a); y = lum(b); if (x < y) { t = x; x = y; y = t }; printf "%.2f\n", (x + 0.05) / (y + 0.05) }'
+}
+BALKEN=$(komponente progress_bar)
+TEXT=$(komponente label)
+GRUND=$(sed -n 's/^desktop-color: "\(.*\)"$/\1/p' "$THEME")
+check "der Balken zeigt keinen Text mehr" '[[ -n $BALKEN && -z $(wert text "$BALKEN") && -z $(wert text_color "$BALKEN") ]]'
+check "der Countdown steht als eigener Text darunter (label mit der id __timeout__)" '[[ $(wert text "$TEXT") == "@TIMEOUT_NOTIFICATION_LONG@" && $(wert top "$TEXT") == "$(wert top "$BALKEN")+"* ]]'
+check "der Text beginnt erst unter dem Balken" 'h=$(wert height "$BALKEN") o=$(wert top "$TEXT"); o=${o##*+}; [[ $h =~ ^[0-9]+$ && $o =~ ^[0-9]+$ ]] && ((o >= h + 4))'
+check "Stahl hell auf dem Grund: 10,26:1, mindestens 4,5:1 (WCAG AA)" '[[ $(wert color "$TEXT") == "#B4C6D1" && $(kontrast "$(wert color "$TEXT")" "$GRUND") == 10.26 ]]'
 
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
