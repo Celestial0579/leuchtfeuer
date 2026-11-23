@@ -58,6 +58,9 @@ clone_wizard() {
 # clone_from_device QUELL-GERÄT BESCHREIBUNG [QUELL-ID]
 clone_from_device() {
 	local sdev=$1 slabel=$2 sid=${3:-} tid tdev tsize ssize
+	# Ist das Fenster lf-klon noch offen, fragt lf nichts und schreibt nichts, auch keine
+	# Partitionstabelle (#87).
+	tmux_job_frei lf-klon || return 0
 	tid=$(disk_pick "Ziel" "Auf welche Disk soll geklont werden?\nQuelle: $slabel" ${sid:+"$sid"}) || return 0
 	safety_check_target "$tid" "$sid" || return 0
 	tdev=$(disk_resolve "$tid")
@@ -289,6 +292,9 @@ clone_ident() {
 
 clone_copy() {
 	local sdev=$1 tdev=$2 n=${#CLONE_PARTS[@]} i job status shash thash
+	# Noch einmal direkt vor dem Start, lf läuft auch auf tty2: Ist das Fenster lf-klon offen,
+	# bleiben Skript und Status seines Jobs unberührt (#87).
+	tmux_job_frei lf-klon || return 1
 	job="$LF_RUN/clone-job.sh"
 	status="$LF_RUN/clone-status"
 	rm -f "$status" "$job"

@@ -2,6 +2,9 @@
 # Datenrettung: defekte Disk -> Image auf Ziel-Disk -> Dateien/Disk/VHDX daraus.
 
 recover_wizard() {
+	# Ist das Fenster lf-rettung noch offen, läuft dort womöglich noch eine Rettung. Dann legt lf
+	# keinen neuen Fall an (#87).
+	tmux_job_frei lf-rettung || return 0
 	ui_msg "Datenrettung" "So läuft die Rettung ab:\n\n 1. Defekte Quell-Disk wählen. Sie wird sofort schreibgeschützt.\n 2. Ziel-Disk wählen. Darauf landet ein vollständiges Image (Pflicht).\n 3. ddrescue liest in drei Phasen: erst alles gut Lesbare, dann rückwärts, zuletzt die Fehlerstellen.\n    Unterbrechungen sind kein Problem: Der Stand wird laufend gespeichert.\n 4. Danach arbeitest du nur noch mit dem Image, nie mehr mit der kranken Disk:\n    Dateien kopieren, auf neue Disk schreiben, Dateien suchen oder VHDX erzeugen.\n\nTipp: Je weniger die defekte Disk läuft, desto besser. Nichts anderes an ihr ausprobieren."
 
 	local sid tid sj tj sdev size
@@ -474,17 +477,27 @@ image_pick_part() {
 	ui_menu "Partition wählen" "Welche Partition aus dem Image?" -- "${items[@]}"
 }
 
+# image_copy_files FALL IMAGE   Kopiert Dateien aus einer Partition des Images. Gibt es eine fertige
+#   reparierte Kopie (image_repair), steht sie zur Wahl. Ihre Partitionen hängen wie nach der
+#   Reparatur unter $LF_IMAGE_MNT/repair-<Partition> (#87).
 image_copy_files() {
-	local case=$1 img=$2 loop part mp dst mode
-	loop=$(image_attach "$img" ro)
+	local case=$1 img=$2 src=$2 loop part mp dst mode
+	if [[ -f $img.repair && -f $img.repair.fertig ]]; then
+		mode=$(ui_menu "Dateien kopieren" "Aus welchem Image kopieren?" -- \
+			repair "Aus der reparierten Kopie ($(basename "$img").repair)" \
+			orig "Aus dem Original-Image ($(basename "$img"))") || return 0
+		[[ $mode == repair ]] && src=$img.repair
+	fi
+	loop=$(image_attach "$src" ro)
 	part=$(image_pick_part "$loop") || return 0
 	mp="$LF_IMAGE_MNT/$(basename "$part")"
+	[[ $src == "$img" ]] || mp="$LF_IMAGE_MNT/repair-$(basename "$part")"
 	part_mount_ro "$part" "$mp" || { ui_msg "Einhängen" "$(basename "$part") ließ sich nicht einhängen.\nTipp: 'Dateisystem auf einer Kopie reparieren' oder PhotoRec."; return 0; }
 	mode=$(ui_menu "Dateien kopieren" "$part ist nur lesend unter $mp eingehängt." -- \
 		all "Alles kopieren (rsync) nach $case/dateien/" \
 		mc "Selbst auswählen (Midnight Commander)" \
 		shell "Shell im Verzeichnis öffnen") || return 0
-	dst="$case/dateien/$(basename "$part")"
+	dst="$case/dateien/$(basename "$mp")"
 	mkdir -p "$dst"
 	case $mode in
 	all)
@@ -511,13 +524,38 @@ image_to_disk() {
 	clone_from_device "$loop" "Image $(basename "$case")"
 }
 
+# image_repair FALL IMAGE   Repariert ein Dateisystem in einer Kopie des Images (IMAGE.repair), nie
+#   im Image selbst. Die Kopie legt cp im eigenen Fenster lf-reparatur-kopie an. Fertig ist sie erst,
+#   wenn cp fehlerfrei endet: Dann steht IMAGE.repair.fertig daneben (#87). Eine Kopie ohne diesen
+#   Vermerk (abgebrochen, Ziel voll, Neustart) wird nie repariert, sondern nach Rückfrage neu
+#   angelegt. Solange das Fenster der Kopie offen ist, wird nichts eingebunden.
 image_repair() {
-	local case=$1 img=$2 copy="$2.repair" need loop part fs
-	need=$(du -B1 "$img" | cut -f1)
-	if [[ ! -f $copy ]]; then
+	local case=$1 img=$2 copy="$2.repair" fertig="$2.repair.fertig" sess=lf-reparatur-kopie need loop part fs
+	if tmux has-session -t "=$sess" 2>/dev/null; then
+		ui_msg "Reparatur" "Das Fenster $sess ist noch offen: Die Kopie läuft noch, oder sie wartet auf Enter. Repariert wird erst, wenn das Fenster zu ist.\n\nOK zeigt das Fenster an."
+		tmux attach -t "=$sess" || true
+		tmux has-session -t "=$sess" 2>/dev/null && return 0
+	fi
+	if [[ ! -f $fertig || ! -f $copy ]]; then
+		# Ein Vermerk ohne Kopie gilt nicht.
+		rm -f -- "$fertig"
+		if [[ -e $copy || -L $copy ]]; then
+			ui_yesno "Reparatur" "Die Kopie $copy ist nicht fertig geworden (abgebrochen, Ziel voll oder Neustart). Repariert wird nur eine vollständige Kopie.\n\nDie unfertige Kopie löschen und neu anlegen? Das Original-Image bleibt unverändert." || return 0
+			rm -f -- "$copy"
+		fi
+		need=$(du -B1 "$img" | cut -f1)
 		(($(target_free) > need)) || { die "Für die Kopie fehlen $(human "$need") auf dem Ziel."; return 0; }
 		ui_yesno "Reparatur" "Das Original-Image bleibt unverändert. Repariert wird eine Kopie:\n$copy\n\nDas belegt etwa $(human "$need"). Kopie jetzt anlegen?" || return 0
-		tmux_run "lf-kopie" bash -c 'cp --sparse=always "$1" "$2" && echo Kopie fertig; read -r -p "Enter … " _' _ "$img" "$copy"
+		# Den Vermerk schreibt nur ein cp, das fehlerfrei endet.
+		tmux_run "$sess" bash -c 'if cp --sparse=always "$1" "$2" && : >"$3"; then echo "Kopie fertig."; else echo "Die Kopie ist fehlgeschlagen."; fi; read -r -p "Enter … " _' _ "$img" "$copy" "$fertig" || return 0
+		if tmux has-session -t "=$sess" 2>/dev/null; then
+			ui_msg "Reparatur" "Die Kopie läuft im Hintergrund weiter (Fenster $sess). Repariert wird erst, wenn sie fertig und das Fenster zu ist: Dann diesen Punkt noch einmal wählen."
+			return 0
+		fi
+		if [[ ! -f $fertig ]]; then
+			ui_msg "Reparatur" "Die Kopie ist nicht fertig geworden. Repariert wird nichts, das Original-Image bleibt unverändert."
+			return 0
+		fi
 	fi
 	loop=$(image_attach "$copy" rw)
 	if [[ $(sudo blockdev --getro "$loop" 2>/dev/null) == 1 ]]; then
@@ -538,7 +576,7 @@ image_repair() {
 	*) echo "Für '$fs' gibt es keine automatische Reparatur." ;;
 	esac
 	pause
-	ui_msg "Reparatur" "Fertig. Mit 'Dateien aus dem Image kopieren' kannst du jetzt aus der reparierten Kopie kopieren:\nwähle dort die Partition $(basename "$part")."
+	ui_msg "Reparatur" "Fertig. Mit 'Dateien aus dem Image kopieren' kannst du jetzt aus der reparierten Kopie kopieren:\nwähle dort die reparierte Kopie und die Partition $(basename "$part")."
 	part_mount_ro "$part" "$LF_IMAGE_MNT/repair-$(basename "$part")" &&
 		ui_msg "Eingehängt" "Reparierte Partition liegt nur lesend unter $LF_IMAGE_MNT/repair-$(basename "$part")"
 }

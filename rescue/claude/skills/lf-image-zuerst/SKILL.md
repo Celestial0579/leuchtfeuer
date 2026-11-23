@@ -47,6 +47,7 @@ merkt sich jeden gelesenen Bereich, ein Abbruch kostet deshalb nur Zeit.
   vollständig retten. Fehlen dort Blöcke, wirkt das Dateisystem "dirty". Eine Reparatur (`chkdsk`,
   `ntfsfix`) entfernt dann ganze Ordnerbäume. Klon-Werkzeuge ohne Mapfile verlieren genau so Daten.
 - Reparaturen nie auf dem Image `image.img`, nur auf einer Kopie (`image.img.repair`, legt der
-  Assistent an). Das Image bleibt, bis der Kunde alle Daten geprüft hat.
+  Assistent an). Vollständig ist sie erst, wenn `image.img.repair.fertig` daneben liegt. Das Image
+  bleibt, bis der Kunde alle Daten geprüft hat.
 - Unlesbare Bereiche sind im Image Nullen. Welche Dateien betroffen sind, steht im Bericht
   (Skill `lf-bericht`).

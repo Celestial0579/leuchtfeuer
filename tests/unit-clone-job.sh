@@ -9,6 +9,7 @@
 #   - ein präpariertes Swap-Label oder eine präparierte UUID wird weggelassen, nichts läuft,
 #   - Gerätepfade und Dateisystemnamen werden geprüft, sonst entsteht kein Job,
 #   - ein präparierter Partitionsname steht nicht im sfdisk-Skript.
+# Ist das Fenster lf-klon noch offen, bleiben Skript und Status des Jobs darin unberührt (#87).
 # Ohne root und ohne Disks: blkid, sfdisk und tmux sind Attrappen. Der Job wird nie gestartet.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -306,6 +307,21 @@ table $'eins\n/dev/sdb9 : start=1, size=1' 'a\b' ""
 check "Name mit Zeilenumbruch: keine zusätzliche Zeile im Skript" '[[ $(grep -c "^/dev/sdb" <<<"$SCRIPT") == 3 && $SCRIPT != *"/dev/sdb9"* ]]'
 check "Name mit Backslash und leerer Name: kein Name im Skript" '[[ $SCRIPT != *"name="* ]]'
 check "im Protokoll steht, welcher Name nicht übernommen wurde" 'grep -q "Partitionsname von /dev/sda1 nicht übernommen" "$LF_LOG"'
+
+echo "Das Fenster lf-klon ist noch offen (#87):"
+# tmux meldet nur das Fenster lf-klon als offen. tmux_job_offen schreibt nur mit.
+tmux() { [[ $1 == has-session && $3 == "=lf-klon" ]]; }
+tmux_job_offen() { printf '%s\n' "$1" >>"$T/offen"; }
+plan "/dev/sda1 ext4"
+printf 'ALTER JOB\n' >"$LF_RUN/clone-job.sh"
+echo OK >"$LF_RUN/clone-status"
+rm -f "$T/tmux" "$T/offen"
+clone_copy /dev/sda /dev/sdb
+RC=$?
+check "clone_copy endet mit 1 und startet nichts" '((RC == 1)) && [[ ! -e $T/tmux ]]'
+check "Skript und Status des offenen Jobs bleiben unberührt" '[[ $(cat "$LF_RUN/clone-job.sh") == "ALTER JOB" && $(cat "$LF_RUN/clone-status") == OK ]]'
+check "lf sagt, dass im Fenster lf-klon noch ein Job offen ist" '[[ $(cat "$T/offen" 2>/dev/null) == lf-klon ]]'
+tmux() { return 1; }
 
 cd / || exit 1
 rm -rf "$T"
