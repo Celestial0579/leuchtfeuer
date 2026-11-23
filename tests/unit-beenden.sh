@@ -27,6 +27,12 @@ CLAUDE_FREIGABE_RUECKSTAND=$T/rueckstand
 # Der Merker im Kernel (GHSA-874q-q3v7-m56v): eine Datei, 2 wie nach dem Start.
 CLAUDE_FREIGABE_MERKER=$T/merker
 echo 2 >"$T/merker"
+# Die Einhängungen für claude.sh (GHSA-874q-q3v7-m56v): self/stat ist das echte des Lesers, keine
+# Einhängung auf den Pfaden des Merkers. Die Regel einer laufenden Freigabe gibt es hier nicht.
+CLAUDE_FREIGABE_PROC=$T/fproc
+mkdir -p "$T/fproc/self" && ln -s /proc/self/stat "$T/fproc/self/stat"
+echo "25 21 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw" >"$T/fproc/self/mountinfo"
+CLAUDE_FREIGABE_REGEL=$T/regel
 
 fails=0
 check() {
@@ -134,9 +140,10 @@ start "an, ohne Ablauf" "an bis 12:40"
 check "nach dem Warten mit Timer (Freischalten war noch nicht fertig): nichts" '((RC == 1)) && grep -qx "sleep 5" "$T/aufrufe" && ! grep -q "^sudo" "$T/aufrufe"'
 LF_FREIGABE_WARTE=1 start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
 check "die Wartezeit kommt aus LF_FREIGABE_WARTE" '((RC == 0)) && grep -qx "sleep 1" "$T/aufrufe"'
+check "sagt lf-freigabe danach aus, auch mit dem Merker 2: Das Menü hat die Freigabe gesehen, der Zustand sagt Neustart nötig (GHSA-874q-q3v7-m56v)" '[[ $OUT == "Neustart nötig: Das Menü kennt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem: aus" ]]'
 echo 1 >"$T/merker"
 start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
-check "sagt lf-freigabe danach aus, obwohl der Merker im Kernel die Freigabe zeigt: der Zustand sagt Neustart nötig (GHSA-874q-q3v7-m56v)" '((RC == 0)) && [[ $OUT == "Neustart nötig: Der Kernel zeigt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem aus" ]]'
+check "sagt lf-freigabe danach aus, obwohl der Merker im Kernel die Freigabe zeigt: der Zustand sagt Neustart nötig (GHSA-874q-q3v7-m56v)" '((RC == 0)) && [[ $OUT == "Neustart nötig: Das Menü kennt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem: aus" ]]'
 echo 2 >"$T/merker"
 
 echo "Aufruf beim Start von lf:"

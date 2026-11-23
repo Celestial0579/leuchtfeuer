@@ -1578,6 +1578,8 @@ main_menu() {
 		# Durchlauf (#115).
 		if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
 			ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Bis eben galt noch" "$freigabe_ende")"
+			# Das Menü hat eine Freigabe beendet und merkt sich sie bis zum Neustart (GHSA-874q-q3v7-m56v).
+			CLAUDE_FREIGABE_GESEHEN=1
 		fi
 		ui_info "Leuchtfeuer" "Prüfe angeschlossene Disks (SMART) …"
 		# Direkt aufrufen, nicht in $( … ): Aus einer Subshell käme DISKS_ANY_BAD nicht zurück.
@@ -1587,7 +1589,10 @@ main_menu() {
 		((DISKS_ANY_BAD)) && default=rescue
 		extra=()
 		tmux has-session -t lf-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
-		hint=$(claude_freigabe_hinweis)
+		# Direkt aufrufen, nicht in $( … ): Nur so merkt sich das Menü eine Freigabe, die es dabei sieht
+		# (GHSA-874q-q3v7-m56v). Der Hinweis zeigt denselben Zustand.
+		claude_freigabe_zustand >/dev/null
+		hint=$(claude_freigabe_hinweis "$CLAUDE_FREIGABE_STAND")
 		# SSH (#99): Anmeldungen ins Protokoll, offene Sitzungen über der Übersicht
 		tools_ssh_log_sync
 		ssh=$(tools_ssh_hinweis)
@@ -1696,6 +1701,8 @@ log "Leuchtfeuer $LF_VERSION gestartet"
 # Eine Freigabe ohne Timer endet vor allem anderen, auch vor dem Entsperren von LF-DATA (#84).
 if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
 	ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Beim Start galt noch" "$freigabe_ende")"
+	# Das Menü hat eine Freigabe beendet und merkt sich sie bis zum Neustart (GHSA-874q-q3v7-m56v).
+	CLAUDE_FREIGABE_GESEHEN=1
 fi
 persist_startup
 sshkeys_notice
