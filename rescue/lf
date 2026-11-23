@@ -82,6 +82,7 @@ selftest() {
 	selftest_ssh "$dir" || ok=0
 	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0
 	selftest_ptrace || ok=0
+	selftest_kexec || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -716,6 +717,20 @@ selftest_ptrace() {
 		return 1
 	fi
 	echo "LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)"
+}
+
+# selftest_kexec   kexec ist gesperrt (GHSA-874q-q3v7-m56v): kernel.kexec_load_disabled ist 1. Den
+#   Wert setzt build/overlay/etc/sysctl.d/90-lf-kexec.conf beim Start, bis zum nächsten Start lässt
+#   er sich nicht mehr zurücksetzen, auch nicht von root: Kein Neustart springt in einen Kernel, den
+#   jemand während einer Freigabe geladen hat. LF_KEXEC_DISABLED nennt für Tests eine andere Datei.
+selftest_kexec() {
+	local f=${LF_KEXEC_DISABLED:-/proc/sys/kernel/kexec_load_disabled} v=
+	[[ -r $f ]] && read -r v <"$f"
+	if [[ $v != 1 ]]; then
+		echo "LF-SELFTEST: kexec: kernel.kexec_load_disabled ist ${v:-nicht lesbar} statt 1"
+		return 1
+	fi
+	echo "LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)"
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
@@ -1471,7 +1486,10 @@ selftest_claude_aufgabe() {
 	((good))
 }
 
-# selftest_claude_freigabe   Volles sudo nur nach Freischalten durch den Techniker, mit Ablauf.
+# selftest_claude_freigabe   Volles sudo nur nach Freischalten durch den Techniker, mit Ablauf. Danach
+#   hat lf-claude bis zum Neustart kein sudo mehr, auch nicht lf-lesen und lf-aufgabe, und eine neue
+#   Freigabe gibt es erst nach dem Neustart (GHSA-874q-q3v7-m56v). Was danach als lf-claude läuft,
+#   startet der Selbsttest als root (selftest_as), ohne die Grundregel.
 selftest_claude_freigabe() {
 	local good=1
 	lf-freigabe aus >/dev/null 2>&1
@@ -1488,13 +1506,19 @@ selftest_claude_freigabe() {
 		echo "LF-SELFTEST: Freigabe: Freischalten wirkt nicht ($(lf-freigabe status))"
 		good=0
 	fi
-	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst. Danach empfiehlt status
-	# bis zum Neustart einen (GHSA-799j-44qx-x7xj).
+	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst. Danach sagt status bis zum
+	# Neustart "Neustart nötig", die Grundregel ist gesperrt, und "an" lehnt ab (GHSA-874q-q3v7-m56v).
 	systemctl start lf-claude-freigabe-ende.service
-	if [[ $(lf-freigabe status) == "aus, Neustart empfohlen (letzte Freigabe bis "* ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/lf-claude-freigabe ]]; then
-		echo "LF-SELFTEST: Freigabe: nach Ablauf gilt wieder nur lf-lesen und lf-aufgabe, status empfiehlt einen Neustart"
+	if [[ $(lf-freigabe status) == "Neustart nötig (letzte Freigabe bis "* ]] && ! selftest_as sudo -n true 2>/dev/null &&
+		[[ ! -e /etc/sudoers.d/lf-claude-freigabe && ! -e /etc/sudoers.d/lf-claude ]]; then
+		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude kein sudo mehr, auch nicht lf-lesen und lf-aufgabe, status sagt Neustart nötig"
 	else
-		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude weiter volles sudo"
+		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude weiter sudo ($(lf-freigabe status))"
+		lf-freigabe aus >/dev/null 2>&1
+		good=0
+	fi
+	if SUDO_USER=rescue lf-freigabe an 1 >/dev/null 2>&1 || [[ -e /etc/sudoers.d/lf-claude-freigabe ]]; then
+		echo "LF-SELFTEST: Freigabe: nach einer Freigabe ließ sich vor dem Neustart eine neue freischalten"
 		lf-freigabe aus >/dev/null 2>&1
 		good=0
 	fi

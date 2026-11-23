@@ -77,6 +77,7 @@ jobs:
       # Bestätigung, mit Schlüssel kein Passwort. sshd -T mit lf.conf (selftest_ssh).
       # LF-SSH im ISO: Partition 3 mit FAT und LIESMICH.txt, der MBR bleibt der von xorriso.
       # ptrace: ab dem Start gesperrt, auch für root (kernel.yama.ptrace_scope=3). Echt prüft es selftest_ptrace.
+      # kexec: ab dem Start gesperrt, auch für root (kernel.kexec_load_disabled=1). Echt prüft es selftest_kexec.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue gdisk xorriso mtools dosfstools openssh-server
@@ -120,6 +121,7 @@ jobs:
           bash tests/unit-ssh-schluessel.sh
           bash tests/unit-lf-ssh-image.sh
           bash tests/unit-ptrace.sh
+          bash tests/unit-kexec.sh
           bash tests/unit-hang.sh
           bash tests/unit-image-release.sh
           bash tests/unit-passwort-sperre.sh

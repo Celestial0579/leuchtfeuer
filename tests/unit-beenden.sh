@@ -67,7 +67,7 @@ MENUE="Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): Weg zu root a
 
 echo "Die Zeilen und der Ort stimmen mit lf-freigabe überein:"
 check "derselbe Rückstand wie RESIDUE in lf-freigabe" '[[ $RUECKSTAND_ISO == "$(sed -n "s/^RESIDUE=//p" rescue/bin/lf-freigabe)" ]]'
-check "jeder Hinweis von lf-freigabe aufs Ausschalten am Netzschalter enthält, wonach das Menü sucht" '[[ $(grep -c "echo \".*Netzschalter gedrückt halten" rescue/bin/lf-freigabe) == 3 ]] && grep -qF "echo \"Sofort ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "echo \"\$END_OPEN, Ende seit \$(date +%H:%M). Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "grep -aF \"Netzschalter gedrückt halten\"" rescue/lib/claude.sh'
+check "jeder Hinweis von lf-freigabe aufs Ausschalten am Netzschalter enthält, wonach das Menü sucht, auch der nach einer Freigabe und die Ablehnung einer neuen davor (GHSA-874q-q3v7-m56v)" '[[ $(grep -c "echo \".*Netzschalter gedrückt halten" rescue/bin/lf-freigabe) == 5 ]] && grep -qF "(nach der Freigabe kann Code aus ihr in jedem Programm als root mitlaufen)\"" rescue/bin/lf-freigabe && grep -qF "Nach einer Freigabe gibt es bis zum Neustart keine neue. Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "echo \"Sofort ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "echo \"\$END_OPEN, Ende seit \$(date +%H:%M). Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten" rescue/bin/lf-freigabe && grep -qF "grep -aF \"Netzschalter gedrückt halten\"" rescue/lib/claude.sh'
 
 echo "Ohne Zeile zum Netzschalter:"
 beenden reboot
@@ -120,8 +120,9 @@ start() {
 	OUT=$(claude_freigabe_ohne_timer ui)
 	RC=$?
 }
-start "an, ohne Ablauf" "an, ohne Ablauf" "aus, Neustart empfohlen (letzte Freigabe bis 12:40)"
-check "Regel ohne Timer, nach 5 s noch so: lf-freigabe ablauf, dann der neue Zustand" '((RC == 0)) && [[ $OUT == "aus, Neustart empfohlen (letzte Freigabe bis 12:40)" && $(grep -c "^lf-freigabe status" "$T/aufrufe") == 3 ]] && grep -qx "sudo lf-freigabe ablauf" "$T/aufrufe" && grep -qx "sleep 5" "$T/aufrufe" && grep -qx "ui_info Claude-Freigabe" "$T/aufrufe"'
+NN="Neustart nötig (letzte Freigabe bis 12:40): Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (nach der Freigabe kann Code aus ihr in jedem Programm als root mitlaufen)"
+start "an, ohne Ablauf" "an, ohne Ablauf" "$NN"
+check "Regel ohne Timer, nach 5 s noch so: lf-freigabe ablauf, dann der neue Zustand" '((RC == 0)) && [[ $OUT == "$NN" && $(grep -c "^lf-freigabe status" "$T/aufrufe") == 3 ]] && grep -qx "sudo lf-freigabe ablauf" "$T/aufrufe" && grep -qx "sleep 5" "$T/aufrufe" && grep -qx "ui_info Claude-Freigabe" "$T/aufrufe"'
 start "an bis 12:40"
 check "Freigabe mit Timer: nichts, kein Warten" '((RC == 1)) && [[ -z $OUT ]] && ! grep -q "^sudo\|^sleep\|^ui_info" "$T/aufrufe"'
 start "aus"
@@ -138,7 +139,7 @@ l_banner=$(grep -n '^banner$' rescue/lf | cut -d: -f1)
 check "im Menü: nach dem Start der Oberfläche, vor dem Entsperren von LF-DATA" '[[ -n $l_end && -n $l_persist && -n $l_banner ]] && ((l_banner < l_end && l_end < l_persist))'
 check "vor dem Selbsttest, ohne Dialog" 'sed -n "/^--selftest)$/,/^	;;$/p" rescue/lf | grep -A3 "^	if freigabe_ende=\$(claude_freigabe_ohne_timer); then$" | grep -q "^	selftest$"'
 start_dialog='	ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Beim Start galt noch" "$freigabe_ende")"'
-check "danach ein Dialog mit dem neuen Zustand, Text wie bisher (claude_freigabe_ende_text, #115)" '[[ -n $l_end && $(sed -n "$((l_end + 1))p" rescue/lf) == "$start_dialog" && $(claude_freigabe_ende_text "Beim Start galt noch" "aus, Neustart empfohlen (letzte Freigabe bis 12:40)") == "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: aus, Neustart empfohlen (letzte Freigabe bis 12:40)\n\nSicher endet root-Zugriff nur mit einem Neustart." && $(claude_freigabe_ende_text "Beim Start galt noch" "") == *"\n\nZustand: unbekannt\n\n"* ]]'
+check "danach ein Dialog mit dem neuen Zustand: Claude bis zum Neustart gesperrt (claude_freigabe_ende_text, #115, GHSA-874q-q3v7-m56v)" '[[ -n $l_end && $(sed -n "$((l_end + 1))p" rescue/lf) == "$start_dialog" && $(claude_freigabe_ende_text "Beim Start galt noch" "$NN") == "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $NN\n\nClaude bleibt bis zum Neustart gesperrt. Sicher endet root-Zugriff nur mit dem Ausschalten am Netzschalter." && $(claude_freigabe_ende_text "Beim Start galt noch" "") == *"\n\nZustand: unbekannt\n\n"* ]]'
 
 echo
 if ((fails)); then
