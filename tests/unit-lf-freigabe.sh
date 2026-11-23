@@ -15,8 +15,9 @@
 #     lf-claude laufen (uid- und gid-Felder, Gruppen, capabilities), auch Jobs von lf-aufgabe.
 #     Jobs von vorher bleiben mit allem, was nach PPid von ihnen abstammt, solange die Grundregel
 #     nicht gesperrt ist (B5, nur mit Attrappen von /proc). Was beim Beenden der Prozesse noch
-#     dazukommt (Einheiten, at-Aufträge, cron-Dateien), beendet oder sperrt das Ende danach, in
-#     beiden Runden (#117). Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
+#     dazukommt (Einheiten, at-Aufträge, cron-Dateien, eine ld.so.preload, ein System für
+#     soft-reboot, ein Kernel für kexec), beendet, sperrt oder entlädt das Ende danach, in beiden
+#     Runden (#117, #120). Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
 #     danach noch darf.
 #   - ntfs-3g für eine Quelle, die lf-aufgabe nur lesend eingehängt hat, läuft als eigener Dienst
 #     (ntfs3g_ro in recover.sh). Er bleibt am Ende einer Freigabe und zählt nicht als Rückstand,
@@ -42,8 +43,9 @@
 #     modprobe, setuid-Dateien, capabilities, Dateien unter /usr, Kernel-Einstellungen (auch ein
 #     Kernel für kexec) und Einhängungen (auch über lf-lesen), der Inhalt der Credentials von
 #     Diensten (getty und login lesen daraus login.noauth und agetty.autologin) und ihre Ablagen.
-#     Eine neue ld.so.preload und ein System für soft-reboot werden gesperrt, eine geänderte Kette
-#     der Grundregel (lf-aufgabe, /etc/lf-release) sperrt die Grundregel bis zum Neustart (F14).
+#     Eine neue ld.so.preload (jede in einem eigenen Ordner, #120) und ein System für soft-reboot
+#     werden gesperrt, eine geänderte Kette der Grundregel (lf-aufgabe, /etc/lf-release) sperrt die
+#     Grundregel bis zum Neustart (F14).
 #   - Rückstand sind auch ganz /root, Dotfiles und ~/bin des Technikers, cron der Benutzer, die
 #     Skripte von dpkg, linger und Ordner unter /run, aus denen Dienste lesen, die Dateien geladener
 #     Einheiten (auch hinter Verknüpfungen außerhalb der Suchpfade), die Benutzer-Manager (Umgebung,
@@ -1300,7 +1302,8 @@ printf '%s\n' "41 22 0:30 /var/tmp $W/usr/local/bin/lf-lesen rw,nosuid,relatime 
 timeout 120 bash "$F" aus >"$T/out" 2>&1
 RC=$?
 check "das Ende läuft durch, auch mit einer Verknüpfung auf /dev/zero und einem FIFO in der Kette" '[[ $RC == 0 ]] && grep -q "Claude läuft weiter" "$LOG"'
-check "eine neue ld.so.preload ist gesperrt, nicht gelöscht, und gemeldet" '[[ ! -e $W/etc/ld.so.preload && -f $W/etc/ld.so.preload.lf-gesperrt ]] && grep -qF "gesperrt: $W/etc/ld.so.preload" "$LOG" && grep -qxF "Datei neu: $W/etc/ld.so.preload.lf-gesperrt" "$R"'
+p=("$W"/etc/ld.so.preload.lf-gesperrt.*/ld.so.preload)
+check "eine neue ld.so.preload ist gesperrt, in einem eigenen Ordner, nicht gelöscht, und gemeldet" '((${#p[@]} == 1)) && [[ ! -e $W/etc/ld.so.preload && ! -e $W/etc/ld.so.preload.lf-gesperrt && -f ${p[0]} ]] && grep -qxF /var/lib/lf-claude/x.so "${p[0]}" && grep -qF "gesperrt: $W/etc/ld.so.preload (jetzt ${p[0]%/*})" "$LOG" && grep -qxF "Datei neu: ${p[0]}" "$R" && grep -qxF "Ordner neu: ${p[0]%/*}" "$R"'
 check "Drop-in an einer Einheit von vorher: Rückstand" 'grep -qxF "Unit-Datei neu: $W/run/systemd/system/a.service.d/x.conf" "$R" && grep -qxF "Unit-Ordner neu: $W/run/systemd/system/a.service.d" "$R"'
 check "shadow, PAM, polkit, SSH und modprobe: Rückstand" 'grep -qxF "Datei geändert: $W/etc/shadow" "$R" && grep -qxF "Datei geändert: $W/etc/pam.d/common-auth" "$R" && grep -qxF "Datei neu: $W/etc/polkit-1/rules.d/00-x.rules" "$R" && grep -qxF "Datei neu: $W/root/.ssh/authorized_keys" "$R" && grep -qxF "Datei neu: $W/etc/modprobe.d/x.conf" "$R"'
 check "setuid-Kopie einer Shell und capabilities: Rückstand" 'grep -qxF "setuid/setgid: $W/var/tmp/sh" "$R" && grep -qxF "capabilities: $W/var/tmp/py cap_setuid=ep" "$R"'
@@ -1443,6 +1446,52 @@ rm -rf "$T/proc/$J3"
 rm -f "$T/cron.d/runde1.lf-gesperrt" "$T/cron.d/runde2.lf-gesperrt" "$T/unit/runde1-spaet.service" "$T/unit/runde2-spaet.service"
 sed -i -e '/^117[12]$/d' "$T/atq"
 sed -i -e '/^runde[12]-spaet\.service /d' "$T/units"
+reboot_sim
+# ld.so.preload, soft-reboot und kexec sperrt oder entlädt das Ende nach dem Beenden der Prozesse
+# noch einmal, in jeder Runde, vor neuen Einheiten (#120). Erste Runde: Eine ld.so.preload aus der
+# Freigabe sperrt schon der erste Schritt. Eine zweite, ein System für soft-reboot, ein Kernel für
+# kexec und eine Einheit kommen erst beim Beenden eines Prozesses aus der Freigabe dazu
+# (spawn_term). Gesperrte ld.so.preload von weiter oben räumt der Test vorher ab.
+rm -rf "$W/etc/ld.so.preload.lf-gesperrt" "$W/etc/ld.so.preload.lf-gesperrt".*
+: >"$LOG"
+: >"$T/systemctl.log"
+: >"$T/perl.log"
+bash "$F" an 30 >"$T/out" 2>&1
+echo /var/lib/lf-claude/a.so >"$W/etc/ld.so.preload"
+J4=$(spawn_term 'echo /var/lib/lf-claude/b.so >"$W/etc/ld.so.preload"; mkdir -p "$W/run/nextroot/etc" && echo x >"$W/run/nextroot/etc/os-release"; echo 1 >"$W/sys/kernel/kexec_loaded"; unit r120-spaet.service no /system.slice/r120-spaet.service')
+fake "$J4" 0 0 1 "SUDO_USER=lf-claude|SUDO_COMMAND=/usr/bin/sleep 300" "sleep 300" "" 0 9000
+bash "$F" aus >"$T/out" 2>&1
+p=("$W"/etc/ld.so.preload.lf-gesperrt.*/ld.so.preload)
+check "ld.so.preload, soft-reboot und kexec, die beim Beenden der Prozesse dazukommen: danach gesperrt oder entladen, vor neuen Einheiten und vor der Prüfung des Rückstands (#120)" 'z1=$(line "Ende der Freigabe: beendet, prüfe Rückstand") && z2=$(line "beendet: $J4 sleep") && z3=$(grep -nF "gesperrt: $W/etc/ld.so.preload (jetzt " "$LOG" | sed -n 2p | cut -d: -f1) && z4=$(line "gesperrt: $W/run/nextroot (jetzt ") && z5=$(line "entladen: Kernel für kexec (kexec_loaded)") && z6=$(line "beendet: Einheit r120-spaet.service") && ((z2 < z3 && z3 < z6 && z2 < z4 && z4 < z6 && z2 < z5 && z5 < z6 && z6 < z1)) && [[ ! -e $W/etc/ld.so.preload && ! -e $W/run/nextroot && $(cat "$W/sys/kernel/kexec_loaded") == 0 ]] && ! kill -0 "$J4" 2>/dev/null'
+check "…beide ld.so.preload bleiben, jede in einem eigenen Ordner, stehen im Rückstand und sperren die Grundregel bis zum Neustart" '((${#p[@]} == 2)) && [[ -f ${p[0]} && -f ${p[1]} && $(cat "${p[@]}" | sort | tr "\n" " ") == "/var/lib/lf-claude/a.so /var/lib/lf-claude/b.so " ]] && grep -qxF "Datei neu: ${p[0]}" "$R" && grep -qxF "Datei neu: ${p[1]}" "$R" && l=$(grep -F "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart: " "$LOG") && [[ $l == *"Datei neu: ${p[0]}"* && $l == *"Datei neu: ${p[1]}"* ]]'
+kill "$J4" 2>/dev/null
+rm -rf "$T/proc/$J4" "$T/unit/r120-spaet.service" "$W/etc/ld.so.preload" "$W/etc/ld.so.preload.lf-gesperrt" "$W/etc/ld.so.preload.lf-gesperrt".*
+sed -i -e '/^r120-spaet\.service /d' "$T/units"
+echo 0 >"$W/sys/kernel/kexec_loaded"
+reboot_sim
+# Zweite Runde: Ein Kind eines Jobs der Grundregel von vorher endet erst dort (wie oben, #117).
+# Dabei kommen eine ld.so.preload, ein System für soft-reboot und ein Kernel für kexec dazu.
+: >"$LOG"
+: >"$T/systemctl.log"
+: >"$T/perl.log"
+cp "$CG/cli.scope/cgroup.procs" "$T/cgroup.procs.vorher"
+bash "$F" an 30 >"$T/out" 2>&1
+J5=$(spawn)
+J6=$(spawn_term 'echo /var/lib/lf-claude/c.so >"$W/etc/ld.so.preload"; mkdir -p "$W/run/nextroot/etc" && echo x >"$W/run/nextroot/etc/os-release"; echo 1 >"$W/sys/kernel/kexec_loaded"')
+fake 4194399741 1001 0 4194399742 "" "sudo /usr/local/bin/lf-aufgabe klonen /dev/sdb /dev/sdc" "$T/bin/sudo"
+fake 4194399742 1001 1001 1 "" "bash"
+fake "$J5" 0 0 4194399741 "" "/bin/bash /usr/local/bin/lf-aufgabe klonen /dev/sdb /dev/sdc" /usr/bin/bash
+fake "$J6" 0 0 "$J5" "" "ddrescue /dev/sdb /dev/sdc" "" 0 9000
+echo "$J5" >"$CG/cli.scope/cgroup.procs"
+echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/r120-sperre.txt"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$W/usr/lib/x86_64-linux-gnu/r120-sperre.txt"
+q=("$W"/etc/ld.so.preload.lf-gesperrt.*/ld.so.preload)
+check "…ebenso in der zweiten Runde: Was dort beim Beenden dazukommt, ist vor der letzten Prüfung des Rückstands gesperrt oder entladen" 'z1=$(line "Ende der Freigabe: beendet, prüfe Rückstand") && z2=$(line "beendet: $J6 ddrescue") && z3=$(line "gesperrt: $W/etc/ld.so.preload (jetzt ") && z4=$(line "gesperrt: $W/run/nextroot (jetzt ") && z5=$(line "entladen: Kernel für kexec (kexec_loaded)") && ((z1 < z2 && z2 < z3 && z2 < z4 && z2 < z5 && ${#q[@]} == 1)) && [[ -f ${q[0]} && ! -e $W/etc/ld.so.preload && ! -e $W/run/nextroot && $(cat "$W/sys/kernel/kexec_loaded") == 0 ]] && grep -qxF "Datei neu: ${q[0]}" "$R" && ! grep -qxF "Datei neu: $W/etc/ld.so.preload" "$R" && ! grep -qxF "System für soft-reboot: $W/run/nextroot" "$R" && ! grep -qF kexec_loaded "$R" && ! kill -0 "$J6" 2>/dev/null'
+kill "$J5" "$J6" 2>/dev/null
+rm -rf "$T/proc/$J5" "$T/proc/$J6" "$T/proc/4194399741" "$T/proc/4194399742" "$W/etc/ld.so.preload" "$W/etc/ld.so.preload.lf-gesperrt" "$W/etc/ld.so.preload.lf-gesperrt".*
+mv "$T/cgroup.procs.vorher" "$CG/cli.scope/cgroup.procs"
+echo 0 >"$W/sys/kernel/kexec_loaded"
 reboot_sim
 
 echo "Kette über Verknüpfungen, hängende Prüfungen (F14):"
@@ -2219,7 +2268,7 @@ bash "$F" an 30 >"$T/out" 2>&1
 echo "/var/lib/lf-claude/x.so" >"$W/etc/ld.so.preload"
 bash "$F" aus >"$T/out" 2>&1
 check "eine gesperrte ld.so.preload: das Ende startet die Sperre danach einmal neu" 'grep -qF "gesperrt: $W/etc/ld.so.preload" "$LOG" && [[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && a=$(grep -n -m1 "^start --no-block $NU$" "$T/systemctl.log" | cut -d: -f1) && b=$(grep -n -m1 "^restart --no-block $NU$" "$T/systemctl.log" | cut -d: -f1) && ((a < b))'
-rm -f "$W/etc/ld.so.preload" "$W/etc/ld.so.preload.lf-gesperrt"
+rm -rf "$W/etc/ld.so.preload" "$W/etc/ld.so.preload.lf-gesperrt" "$W/etc/ld.so.preload.lf-gesperrt".*
 reboot_sim
 # Die Einordnung jeder Art von Zeile (hint_item), direkt aus der Kopie von lf-freigabe: Was niemand
 # eingeordnet hat, sagt Beenden > Ausschalten.

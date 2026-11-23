@@ -178,10 +178,10 @@ unset h
 # Umgebung, die pam_env für sudo liest (/etc/pam.d/sudo: /etc/environment und /etc/default/locale),
 # ganz /root (das Home der Werkzeuge: jq liest ~/.jq, tmux und mc ihre Einstellungen), /etc/tmux.conf,
 # /etc/mc und /run/lf-boot.env. Neu, geändert oder entfernt sperrt die Grundregel bis zum Neustart
-# (lock_lines), ebenso sudo-Dateien, jede Datei unter /usr und /opt (fs_new) und jede neue oder
-# geänderte Einhängung.
+# (lock_lines), ebenso sudo-Dateien, jede Datei unter /usr und /opt (fs_new), jede neue oder
+# geänderte Einhängung und jede gesperrte ld.so.preload (lock_path).
 LOCK_PATHS=("$WROOT"/etc/ld.so.conf "$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so.cache "$WROOT"/etc/ld.so.preload
-	"$WROOT"/etc/ld.so.preload.lf-gesperrt "$WROOT"/etc/nsswitch.conf "$WROOT"/etc/pam.d "$WROOT"/etc/security
+	"$WROOT"/etc/nsswitch.conf "$WROOT"/etc/pam.d "$WROOT"/etc/security
 	"$WROOT"/etc/environment "$WROOT"/etc/default/locale "$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs
 	"$WROOT"/root "$WROOT"/etc/tmux.conf "$WROOT"/etc/mc "$WROOT"/run/lf-boot.env)
 # Was ein geordnetes Ausschalten oder ein Neustart (Beenden > Ausschalten oder Neustart) außer den
@@ -1581,17 +1581,24 @@ files_changed() {
 }
 
 # disable_preload   Eine /etc/ld.so.preload, die seit dem Freischalten neu ist oder sich geändert hat,
-#   bekommt die Endung .lf-gesperrt: Der Lader lädt dann ihre Bibliothek nicht mehr in jedes
-#   Programm, auch nicht in sudo. Gelöscht wird nichts, residue meldet sie (files_changed). PRELOAD_OFF
-#   sagt netz_check, dass die Sperre des Netzschalters sie geladen haben kann (sie startet davor).
+#   kommt in einen neuen Ordner PRELOAD.lf-gesperrt.*, jede in einen eigenen (#120): Der Lader lädt
+#   dann ihre Bibliothek nicht mehr in jedes Programm, auch nicht in sudo. Gelöscht wird nichts,
+#   residue meldet sie (files_changed), und sie sperrt die Grundregel bis zum Neustart (lock_path).
+#   PRELOAD_OFF sagt netz_check, dass die Sperre des Netzschalters sie geladen haben kann (sie
+#   startet davor).
 PRELOAD_OFF=
 disable_preload() {
-	local old now
+	local old now t
 	[[ -f $SNAP/files && (-e $PRELOAD || -L $PRELOAD) ]] || return 0
 	old=$(awk -v p="$PRELOAD" '{q = $0; sub(/^[^ ]* [^ ]* /, "", q)} q == p' "$SNAP/files")
 	now=$(scan find "$PRELOAD" -maxdepth 0 -printf '%C@ %s %p' 2>/dev/null)
 	[[ -n $old && $now == "$old" ]] && return 0
-	mv -f -- "$PRELOAD" "$PRELOAD.lf-gesperrt" 2>/dev/null && PRELOAD_OFF=1 && note "gesperrt: $PRELOAD"
+	if t=$(mktemp -d -- "$PRELOAD.lf-gesperrt.XXXXXX" 2>/dev/null) && mv -- "$PRELOAD" "$t/" 2>/dev/null; then
+		PRELOAD_OFF=1
+		note "gesperrt: $PRELOAD (jetzt $t)"
+	else
+		note "ließ sich nicht sperren: $PRELOAD"
+	fi
 	return 0
 }
 
@@ -1849,9 +1856,11 @@ check_chain() {
 	return 0
 }
 
-# lock_path PFAD   Liegt PFAD in LOCK_PATHS?
+# lock_path PFAD   Liegt PFAD in LOCK_PATHS oder in einem Ordner, in den disable_preload eine
+#   ld.so.preload gesperrt hat (PRELOAD.lf-gesperrt.*)?
 lock_path() {
 	local p
+	[[ $1 == "$PRELOAD".lf-gesperrt.* ]] && return 0
 	for p in "${LOCK_PATHS[@]}"; do
 		[[ $1 == "$p" || $1 == "$p"/* ]] && return 0
 	done
@@ -2959,10 +2968,14 @@ confirm() {
 
 # stop_late   In jeder Runde des Endes nach dem Beenden der Prozesse (stop_root_in_claude,
 #   stop_granted): Was dabei noch gestartet oder angelegt ist (etwa über OnSuccess= einer beendeten
-#   Einheit), beenden oder sperren: neue Einheiten, at-Aufträge, cron-Dateien. Danach noch einmal die
-#   Schlüssel von LF-SSH: Was aus der Freigabe bis hierher noch lief, kann unter SSH_DIR noch etwas
-#   geändert haben (#117).
+#   Einheit), beenden, sperren oder entladen: wie vor dem Beenden zuerst ld.so.preload, ein System
+#   für soft-reboot und einen Kernel für kexec (#120), dann neue Einheiten, at-Aufträge und
+#   cron-Dateien. Danach noch einmal die Schlüssel von LF-SSH: Was aus der Freigabe bis hierher noch
+#   lief, kann unter SSH_DIR noch etwas geändert haben (#117).
 stop_late() {
+	disable_preload
+	disable_nextroot
+	kexec_unload
 	stop_new_units
 	stop_new_at
 	disable_new_cron
@@ -3004,7 +3017,7 @@ off() {
 	# Was jedes Programm lädt und was die Grundregel ausführt, vor allem anderen: Danach läuft keine
 	# Bibliothek aus ld.so.preload mehr mit und kein geändertes lf-aufgabe. Dann, wohin ein Neustart
 	# statt neu zu starten springen könnte. Dann die Schlüssel von LF-SSH, falls sich dort etwas
-	# geändert hat (nach dem Beenden noch einmal).
+	# geändert hat. Nach dem Beenden der Prozesse wiederholt stop_late das, außer der Kette.
 	disable_preload
 	check_chain
 	disable_nextroot
