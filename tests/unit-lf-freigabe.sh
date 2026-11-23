@@ -14,8 +14,10 @@
 #     der Freigabe gestartet sind (Startzeit in /proc/PID/stat), enden, wenn sie nicht nur als
 #     lf-claude laufen (uid- und gid-Felder, Gruppen, capabilities), auch Jobs von lf-aufgabe.
 #     Jobs von vorher bleiben mit allem, was nach PPid von ihnen abstammt, solange die Grundregel
-#     nicht gesperrt ist (B5, nur mit Attrappen von /proc). Prozesse des Technikers laufen weiter;
-#     gemeldet wird, was lf-claude danach noch darf.
+#     nicht gesperrt ist (B5, nur mit Attrappen von /proc). Was beim Beenden der Prozesse noch
+#     dazukommt (Einheiten, at-Aufträge, cron-Dateien), beendet oder sperrt das Ende danach, in
+#     beiden Runden (#117). Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
+#     danach noch darf.
 #   - ntfs-3g für eine Quelle, die lf-aufgabe nur lesend eingehängt hat, läuft als eigener Dienst
 #     (ntfs3g_ro in recover.sh). Er bleibt am Ende einer Freigabe und zählt nicht als Rückstand,
 #     nur wenn Name, Programm, Optionen, Quelle und Einhängepunkt zusammenpassen und er sonst genau
@@ -70,8 +72,8 @@
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
 # /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup, und mit einer eigenen Wurzel (WROOT) für die
 # Dateien, die das Ende prüft. sudo, systemctl, systemd-run, loginctl, atq, atrm, visudo, logger,
-# id, busctl (auch logind), getcap und lf-aufgabe sind Attrappen. Beendet werden nur sleep-Prozesse, die der
-# Test selbst startet.
+# id, busctl (auch logind), getcap und lf-aufgabe sind Attrappen. Beendet werden nur sleep-Prozesse und
+# Subshells (spawn_term), die der Test selbst startet.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 # TZ: Als root läuft lf-freigabe ohne die Umgebung des Aufrufs, die Uhrzeiten im Test kommen aus
@@ -563,6 +565,18 @@ spawn_stopped() {
 	p=$(spawn)
 	kill -STOP "$p"
 	echo "$p"
+}
+# spawn_term BEFEHL   Wie spawn, aber eine Subshell dieses Tests (mit seinen Funktionen) mit sleep als
+#   Kind: Bei TERM beendet sie sleep, führt BEFEHL aus und endet. Nur in den Attrappen, so legt sie
+#   etwa eine Einheit für systemctl an. KILL beendet sie ohne BEFEHL.
+spawn_term() {
+	(
+		trap 'kill "${s:-}" 2>/dev/null; eval "$1"; exit 0' TERM
+		sleep 300 &
+		s=$!
+		wait "$s"
+	) >/dev/null 2>&1 &
+	echo $!
 }
 # line TEXT   Zeile, in der TEXT zum ersten Mal im Protokoll steht.
 line() { grep -n -m1 -F -- "$1" "$LOG" | cut -d: -f1; }
@@ -1387,6 +1401,48 @@ bash "$F" aus >"$T/out" 2>&1
 rm -f "$T/schluessel-bei-$RU6" "$W/usr/lib/x86_64-linux-gnu/security/pam_ssh.so"
 g=("$SK".lf-gesperrt.*/ssh)
 check "…auch nach der zweiten Runde des Beendens (eine Rettung, die das Ende zuerst stehen ließ)" 'a=$(grep -nF "Ende der Freigabe: beendet, prüfe Rückstand" "$LOG" | cut -d: -f1) && b=$(grep -nF "gesperrt: SSH-Schlüssel unter $SK (jetzt " "$LOG" | cut -d: -f1) && ((${#g[@]} == 1 && b > a)) && grep -qxF "freeze $RU6" "$T/systemctl.log" && grep -qxF "Systemdatei neu oder geändert: $W/usr/lib/x86_64-linux-gnu/security/pam_ssh.so" "$R" && [[ ! -s $SK/authorized_keys && $(cat "$SK/status") == freigabe ]] && grep -qxF "restrict,pty ssh-ed25519 PLATZHALTER-spaet spaet@probe" "${g[0]}/authorized_keys"'
+reboot_sim
+# Was beim Beenden der Prozesse noch dazukommt, beendet oder sperrt das Ende danach, in jeder Runde
+# (#117). Hier ein Kind eines Jobs der Grundregel von vorher, außerhalb der cgroups von Claude: Es
+# bleibt zuerst stehen; erst nach einem Rückstand, nach dem die Grundregel bis zum Neustart gesperrt
+# bleibt, beendet stop_granted es mit TERM. Dabei kommen eine Einheit (die noch einen Schlüssel
+# schreibt, bevor das Ende sie anhält), ein at-Auftrag und eine cron-Datei dazu (spawn_term).
+: >"$LOG"
+: >"$T/systemctl.log"
+ssh_keys_setup
+cp "$CG/cli.scope/cgroup.procs" "$T/cgroup.procs.vorher"
+bash "$F" an 30 >"$T/out" 2>&1
+J1=$(spawn)
+J2=$(spawn_term 'unit runde2-spaet.service no /system.slice/runde2-spaet.service; echo 1171 >>"$T/atq"; echo "* * * * * root true" >"$T/cron.d/runde2"')
+fake 4194399741 1001 0 4194399742 "" "sudo /usr/local/bin/lf-aufgabe klonen /dev/sdb /dev/sdc" "$T/bin/sudo"
+fake 4194399742 1001 1001 1 "" "bash"
+fake "$J1" 0 0 4194399741 "" "/bin/bash /usr/local/bin/lf-aufgabe klonen /dev/sdb /dev/sdc" /usr/bin/bash
+fake "$J2" 0 0 "$J1" "" "ddrescue /dev/sdb /dev/sdc" "" 0 9000
+echo "$J1" >"$CG/cli.scope/cgroup.procs"
+echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/r117-sperre.txt"
+touch "$T/schluessel-bei-runde2-spaet.service"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/schluessel-bei-runde2-spaet.service" "$W/usr/lib/x86_64-linux-gnu/r117-sperre.txt"
+g=("$SK".lf-gesperrt.*/ssh)
+check "was in der zweiten Runde beim Beenden noch dazukommt: Die Einheit ist danach beendet, der at-Auftrag entfernt, die cron-Datei gesperrt (#117)" 'z1=$(line "Ende der Freigabe: beendet, prüfe Rückstand") && z2=$(line "beendet: $J2 ddrescue") && z3=$(line "beendet: Einheit runde2-spaet.service") && z4=$(line "entfernt: at-Auftrag 1171") && z5=$(line "gesperrt: cron-Datei $T/cron.d/runde2") && ((z1 < z2 && z2 < z3 && z2 < z4 && z2 < z5)) && grep -qxF "freeze runde2-spaet.service" "$T/systemctl.log" && grep -qx 1171 "$T/atrm.log" && [[ -f $T/cron.d/runde2.lf-gesperrt && ! -e $T/cron.d/runde2 ]] && ! kill -0 "$J1" 2>/dev/null && ! kill -0 "$J2" 2>/dev/null'
+check "…und danach gilt kein Schlüssel von /run/lf/ssh, auch nicht der, den die Einheit noch schrieb" 'z3=$(line "beendet: Einheit runde2-spaet.service") && z6=$(line "gesperrt: SSH-Schlüssel unter $SK (jetzt ") && ((${#g[@]} == 1 && z6 > z3)) && [[ ! -s $SK/authorized_keys && ! -s $SK/kandidaten && $(cat "$SK/status") == freigabe ]] && grep -qxF "restrict,pty ssh-ed25519 PLATZHALTER-spaet spaet@probe" "${g[0]}/authorized_keys"'
+kill "$J1" "$J2" 2>/dev/null
+rm -rf "$T/proc/$J1" "$T/proc/$J2" "$T/proc/4194399741" "$T/proc/4194399742"
+mv "$T/cgroup.procs.vorher" "$CG/cli.scope/cgroup.procs"
+reboot_sim
+# Ebenso in der ersten Runde: ein Prozess aus der Freigabe außerhalb der cgroups von Claude.
+: >"$LOG"
+: >"$T/systemctl.log"
+bash "$F" an 30 >"$T/out" 2>&1
+J3=$(spawn_term 'unit runde1-spaet.service no /system.slice/runde1-spaet.service; echo 1172 >>"$T/atq"; echo "* * * * * root true" >"$T/cron.d/runde1"')
+fake "$J3" 0 0 1 "SUDO_USER=lf-claude|SUDO_COMMAND=/usr/bin/sleep 300" "sleep 300" "" 0 9000
+bash "$F" aus >"$T/out" 2>&1
+check "…ebenso in der ersten Runde, vor der Prüfung des Rückstands" 'z1=$(line "Ende der Freigabe: beendet, prüfe Rückstand") && z2=$(line "beendet: $J3 sleep") && z3=$(line "beendet: Einheit runde1-spaet.service") && z4=$(line "entfernt: at-Auftrag 1172") && z5=$(line "gesperrt: cron-Datei $T/cron.d/runde1") && ((z2 < z3 && z3 < z1 && z2 < z4 && z4 < z1 && z2 < z5 && z5 < z1)) && grep -qx 1172 "$T/atrm.log" && [[ -f $T/cron.d/runde1.lf-gesperrt && ! -e $T/cron.d/runde1 ]] && ! grep -qF "bis zum Neustart:" "$LOG"'
+kill "$J3" 2>/dev/null
+rm -rf "$T/proc/$J3"
+rm -f "$T/cron.d/runde1.lf-gesperrt" "$T/cron.d/runde2.lf-gesperrt" "$T/unit/runde1-spaet.service" "$T/unit/runde2-spaet.service"
+sed -i -e '/^117[12]$/d' "$T/atq"
+sed -i -e '/^runde[12]-spaet\.service /d' "$T/units"
 reboot_sim
 
 echo "Kette über Verknüpfungen, hängende Prüfungen (F14):"
