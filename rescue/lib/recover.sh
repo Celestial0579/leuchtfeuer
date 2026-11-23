@@ -528,9 +528,10 @@ image_to_disk() {
 #   im Image selbst. Die Kopie legt cp im eigenen Fenster lf-reparatur-kopie an. Fertig ist sie erst,
 #   wenn cp fehlerfrei endet: Dann steht IMAGE.repair.fertig daneben (#87). Eine Kopie ohne diesen
 #   Vermerk (abgebrochen, Ziel voll, Neustart) wird nie repariert, sondern nach Rückfrage neu
-#   angelegt. Solange das Fenster der Kopie offen ist, wird nichts eingebunden.
+#   angelegt. Solange das Fenster der Kopie offen ist, wird nichts eingebunden. Eine Partition, die
+#   noch eingehängt ist, hängt es vor der Reparatur aus (#130).
 image_repair() {
-	local case=$1 img=$2 copy="$2.repair" fertig="$2.repair.fertig" sess=lf-reparatur-kopie need loop part fs
+	local case=$1 img=$2 copy="$2.repair" fertig="$2.repair.fertig" sess=lf-reparatur-kopie need loop part fs mp
 	if tmux has-session -t "=$sess" 2>/dev/null; then
 		ui_msg "Reparatur" "Das Fenster $sess ist noch offen: Die Kopie läuft noch, oder sie wartet auf Enter. Repariert wird erst, wenn das Fenster zu ist.\n\nOK zeigt das Fenster an."
 		tmux attach -t "=$sess" || true
@@ -563,6 +564,15 @@ image_repair() {
 		return 0
 	fi
 	part=$(image_pick_part "$loop") || return 0
+	# Hängt die Partition noch, etwa nach einer früheren Reparatur unter repair-<Partition> oder aus
+	# "Dateien kopieren", wird sie zuerst ausgehängt: Ein eingehängtes Dateisystem wird nie
+	# repariert. Ausgehängt wird nie mit Gewalt (#130).
+	while IFS= read -r mp; do
+		[[ -n $mp ]] || continue
+		run sudo umount "$mp" && continue
+		ui_msg "Reparatur" "$(basename "$part") ist unter $mp eingehängt und lässt sich nicht aushängen, etwa weil eine Kopie im Fenster lf-kopie noch daraus liest. Repariert wird erst, wenn nichts mehr darauf zugreift."
+		return 0
+	done < <(findmnt -rn -o TARGET -S "$part" 2>/dev/null)
 	fs=$(sudo blkid -o value -s TYPE "$part")
 	clear
 	echo "Reparatur von $part ($fs) in der Kopie …"
