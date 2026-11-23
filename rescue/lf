@@ -674,13 +674,17 @@ selftest_ssh() {
 }
 
 # selftest_lfssh ORDNER   Das Lesen von LF-SSH (#116) echt, mit setpriv und mtools, an einem eigenen
-#   FAT-Abbild statt des Sticks, darin eine versteckte authorized_keys ohne Schlüssel: sshkeys_image
-#   kopiert es, sshkeys_take liest die Datei daraus als nobody, und eine Kopie, die nur root lesen
-#   darf, liest mtools nicht. ORDNER entsteht neu und ist danach wieder weg.
+#   FAT-Abbild statt des Sticks, darin eine versteckte authorized_keys ohne Schlüssel. Zuerst das
+#   Konto SSHKEYS_READER (sshkeys_reader_check, #123). Dann kopiert sshkeys_image das Abbild: Die
+#   Kopie und ihr Ordner gehören root und SSHKEYS_READER_GROUP (0440 und 0710). sshkeys_take liest
+#   die Datei daraus als SSHKEYS_READER, und eine Kopie, die nur root lesen darf, liest mtools nicht.
+#   ORDNER entsteht neu und ist danach wieder weg.
 selftest_lfssh() {
-	local d=$1 img msg=""
+	local d=$1 img msg="" out
 	rm -rf -- "$d"
-	if ! install -d -m 0755 "$d" "$d/ssh" || ! echo "# Selbsttest" >"$d/authorized_keys" ||
+	if ! out=$(sshkeys_reader_check /); then
+		msg="Lesebenutzer: ${out//$'\n'/; }"
+	elif ! install -d -m 0755 "$d" "$d/ssh" || ! echo "# Selbsttest" >"$d/authorized_keys" ||
 		! mkfs.vfat -C -n LF-SSH "$d/lf-ssh.img" 128 >/dev/null ||
 		! MTOOLSRC=/dev/null mcopy -i "$d/lf-ssh.img" "$d/authorized_keys" ::/authorized_keys ||
 		! MTOOLSRC=/dev/null mattrib +h -i "$d/lf-ssh.img" ::/authorized_keys ||
@@ -688,11 +692,13 @@ selftest_lfssh() {
 		msg="Das Abbild für die Probe ließ sich nicht anlegen."
 	elif ! img=$(SSHKEYS_DIR=$d/ssh sshkeys_image "$d/lf-ssh.img"); then
 		msg="Die Probe ließ sich nicht kopieren (sshkeys_image)."
+	elif [[ $(stat -c '%U:%G %a' -- "${img%/*}" "$img" 2>/dev/null | tr '\n' ' ') != "root:$SSHKEYS_READER_GROUP 710 root:$SSHKEYS_READER_GROUP 440 " ]]; then
+		msg="Die Kopie gehört nicht root, oder nicht nur $SSHKEYS_READER_GROUP darf sie lesen."
 	else
 		: >"$d/ssh/meldungen"
 		SSHKEYS_DIR=$d/ssh sshkeys_take "$img"
 		if [[ $(cat "$d/ssh/status" 2>/dev/null) != gelesen ]] || ! cmp -s "$d/ssh/eingang" "$d/authorized_keys"; then
-			msg="mtools las als nobody die versteckte Datei der Probe nicht."
+			msg="mtools las als $SSHKEYS_READER die versteckte Datei der Probe nicht."
 		elif sshkeys_fat mdir -a -b -i "$d/nur-root.img" ::/ >/dev/null 2>&1; then
 			msg="mtools liest auch, was nur root lesen darf."
 		fi
@@ -702,7 +708,7 @@ selftest_lfssh() {
 		echo "LF-SELFTEST: LF-SSH: $msg"
 		return 1
 	fi
-	echo "LF-SELFTEST: LF-SSH: mtools liest als nobody, auch versteckte Dateien, aber nicht, was nur root lesen darf"
+	echo "LF-SELFTEST: LF-SSH: mtools liest als $SSHKEYS_READER aus einer Kopie, die root gehört, auch versteckte Dateien, aber nicht, was nur root lesen darf"
 }
 
 # selftest_ptrace   ptrace ist gesperrt (#85): kernel.yama.ptrace_scope ist 3. Den Wert setzt

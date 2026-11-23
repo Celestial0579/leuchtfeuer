@@ -12,9 +12,10 @@
 #   - LF-SSH wird nie eingehängt: Das FAT darauf kann jeder ändern, der den Stick in der Hand hat,
 #     darum liest es weder der Kernel noch ein Programm als root. root kopiert nur die Bytes der
 #     Partition in eine Datei im RAM, höchstens so viele, wie LF-SSH im ISO groß ist (eine größere
-#     gilt nicht). Daraus liest mtools als nobody ohne Gruppen und Capabilities, mit no_new_privs
-#     (sshkeys_fat), nur diese eine Datei, höchstens 64 KiB (#116). Leuchtfeuer schreibt nie auf
-#     LF-SSH und führt von dort nie etwas aus.
+#     gilt nicht). Die Datei gehört root, lesen darf sie nur die Gruppe des eigenen Systembenutzers
+#     lf-ssh-leser, den sonst nichts verwendet (#123). Als er liest mtools daraus, ohne weitere
+#     Gruppen und ohne Capabilities, mit no_new_privs (sshkeys_fat), nur diese eine Datei, höchstens
+#     64 KiB (#116). Leuchtfeuer schreibt nie auf LF-SSH und führt von dort nie etwas aus.
 #   - Jede Zeile wird geprüft (sshkeys_check). Was nicht passt, gilt nicht, und tty1 sagt, welche
 #     Zeile es war und warum. Aus der Datei steht dort nie mehr als ein gefilterter Kommentar.
 #   - Die geprüften Schlüssel liegen nur im RAM, in $SSHKEYS_DIR (gehört root). Erst wenn der Mensch
@@ -31,9 +32,10 @@ SSHKEYS_COMMENT_WIDTH=40
 # So groß ist LF-SSH im ISO (LFSSH_KIB in build/lf-ssh/partition.sh, tests/unit-ssh-schluessel.sh
 # vergleicht beide). Mehr kopiert sshkeys_image nie.
 SSHKEYS_MAX_PART_BYTES=$((4096 * 1024))
-# Als wer mtools das FAT von LF-SSH liest (sshkeys_fat).
-SSHKEYS_READER=nobody
-SSHKEYS_READER_GROUP=nogroup
+# Als wer mtools das FAT von LF-SSH liest (sshkeys_fat): ein eigener Systembenutzer mit eigener
+# Gruppe, den sonst nichts verwendet (build/chroot-setup.sh, sshkeys_reader_check, #123).
+SSHKEYS_READER=lf-ssh-leser
+SSHKEYS_READER_GROUP=lf-ssh-leser
 # Mit verschlüsseltem Speicher: bestätigte Fingerabdrücke und die Hostschlüssel (tools_ssh_hostkeys).
 # /etc/lf ist dann /persist/config. Der Ordner gehört root, wie /etc/lf/wifi.
 SSHKEYS_ETC=${SSHKEYS_ETC:-/etc/lf/ssh}
@@ -205,9 +207,10 @@ sshkeys_partitions() {
 # sshkeys_status ZUSTAND [ZAHL]   Hält fest, wie das Laden ausging (sshkeys_status_text).
 sshkeys_status() { printf '%s\n' "$*" >"$SSHKEYS_DIR/status"; }
 
-# sshkeys_fat BEFEHL…   Ein Befehl von mtools als SSHKEYS_READER: ohne Gruppen, Capabilities und die
-#   Umgebung des Aufrufs (HOME ist dann das von nobody, keine .mtoolsrc), mit no_new_privs und
-#   höchstens 20 Sekunden lang. So liest kein Programm als root das FAT von LF-SSH (#116).
+# sshkeys_fat BEFEHL…   Ein Befehl von mtools als SSHKEYS_READER: ohne weitere Gruppen, ohne
+#   Capabilities und ohne die Umgebung des Aufrufs (HOME ist dann /nonexistent, keine .mtoolsrc),
+#   mit no_new_privs und höchstens 20 Sekunden lang. So liest kein Programm als root das FAT von
+#   LF-SSH (#116).
 sshkeys_fat() {
 	setpriv --reuid="$SSHKEYS_READER" --regid="$SSHKEYS_READER_GROUP" --clear-groups --no-new-privs \
 		--inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20 "$@"
@@ -263,23 +266,83 @@ sshkeys_take() {
 	return 0
 }
 
-# sshkeys_image PARTITION   Kopiert die Bytes der PARTITION in eine Datei unter $SSHKEYS_DIR, die nur
-#   SSHKEYS_READER lesen kann, in einem Ordner, den nur root auflistet, und nennt sie. Mehr als
+# sshkeys_image PARTITION   Kopiert die Bytes der PARTITION in eine Datei unter $SSHKEYS_DIR und
+#   nennt sie. Die Datei gehört root, lesen darf sie nur die Gruppe SSHKEYS_READER_GROUP (0440): So
+#   kann auch SSHKEYS_READER sie nicht ändern (#123). Ihr Ordner gehört ebenso root und dieser
+#   Gruppe, auflisten darf ihn nur root, betreten sonst nur die Gruppe (0710). Mehr als
 #   SSHKEYS_MAX_PART_BYTES und ein Byte liest es nie: Ist die Partition größer, Status 2 (sie gilt
 #   nicht). Status 1, wenn das Kopieren scheitert. Den Ordner (lesen.*) räumt sshkeys_load ab.
 sshkeys_image() {
 	local d f size
-	if ! d=$(mktemp -d "$SSHKEYS_DIR/lesen.XXXXXX") || ! chmod 0711 "$d" || ! f=$(mktemp "$d/XXXXXXXXXX"); then
+	if ! d=$(mktemp -d "$SSHKEYS_DIR/lesen.XXXXXX") || ! chown -- "root:$SSHKEYS_READER_GROUP" "$d" ||
+		! chmod 0710 "$d" || ! f=$(mktemp "$d/XXXXXXXXXX"); then
 		return 1
 	fi
 	if ! head -c "$((SSHKEYS_MAX_PART_BYTES + 1))" -- "$1" >"$f" || ! size=$(stat -c %s -- "$f"); then
 		return 1
 	fi
 	((size <= SSHKEYS_MAX_PART_BYTES)) || return 2
-	if ! chown -- "$SSHKEYS_READER:$SSHKEYS_READER_GROUP" "$f" || ! chmod 0400 "$f"; then
+	if ! chown -- "root:$SSHKEYS_READER_GROUP" "$f" || ! chmod 0440 "$f"; then
 		return 1
 	fi
 	printf '%s\n' "$f"
+}
+
+# sshkeys_reader_check [WURZEL]   Gibt es SSHKEYS_READER unter WURZEL (Vorgabe /) so, wie
+#   build/chroot-setup.sh ihn anlegt, und verwendet ihn sonst nichts (#123)? Ein Systembenutzer
+#   (UID 1 bis 999) mit seiner Gruppe SSHKEYS_READER_GROUP, ohne Home (/nonexistent, das es nicht
+#   gibt), ohne Shell (/usr/sbin/nologin), mit gesperrtem Passwort. Kein anderer Benutzer hat seine
+#   UID oder seine Gruppe, keine andere Gruppe ihre GID, die Gruppe hat keine Mitglieder, und er ist
+#   in keiner anderen Gruppe. Sonst je Grund eine Zeile, Status 1.
+sshkeys_reader_check() {
+	local root=${1:-/} u=$SSHKEYS_READER g=$SSHKEYS_READER_GROUP ent gid uid pgid home shell pw x bad=0
+	root=${root%/}
+	if ! ent=$(awk -F: -v u="$u" '$1 == u {print; f = 1; exit} END {exit !f}' "$root/etc/passwd" 2>/dev/null); then
+		echo "$u fehlt in $root/etc/passwd"
+		return 1
+	fi
+	if ! gid=$(awk -F: -v g="$g" '$1 == g {print $3; f = 1; exit} END {exit !f}' "$root/etc/group" 2>/dev/null); then
+		echo "Gruppe $g fehlt in $root/etc/group"
+		return 1
+	fi
+	IFS=: read -r _ _ uid pgid _ home shell <<<"$ent"
+	if [[ ! $uid =~ ^[0-9]+$ ]] || ((10#$uid < 1 || 10#$uid > 999)); then
+		echo "$u ist kein Systembenutzer (UID $uid)"
+		bad=1
+	fi
+	if [[ $pgid != "$gid" ]]; then
+		echo "$u hat nicht die Gruppe $g (GID $pgid statt $gid)"
+		bad=1
+	fi
+	if [[ $home != /nonexistent ]]; then
+		echo "$u hat ein Home ($home)"
+		bad=1
+	elif [[ -e $root/nonexistent || -L $root/nonexistent ]]; then
+		echo "$root/nonexistent gibt es"
+		bad=1
+	fi
+	if [[ $shell != /usr/sbin/nologin ]]; then
+		echo "$u hat eine Shell ($shell)"
+		bad=1
+	fi
+	x=$(awk -F: -v u="$u" -v id="$uid" '$1 != u && $3 == id {printf " %s", $1}' "$root/etc/passwd")
+	[[ -z $x ]] || { echo "UID von $u hat auch:$x"; bad=1; }
+	x=$(awk -F: -v u="$u" -v id="$gid" '$1 != u && $4 == id {printf " %s", $1}' "$root/etc/passwd")
+	[[ -z $x ]] || { echo "Gruppe $g haben auch:$x"; bad=1; }
+	x=$(awk -F: -v g="$g" -v id="$gid" '$1 != g && $3 == id {printf " %s", $1}' "$root/etc/group")
+	[[ -z $x ]] || { echo "GID von $g hat auch die Gruppe:$x"; bad=1; }
+	x=$(awk -F: -v g="$g" '$1 == g {print $4}' "$root/etc/group")
+	[[ -z $x ]] || { echo "Mitglieder in $g: $x"; bad=1; }
+	x=$(awk -F: -v g="$g" -v u="$u" '$1 != g && index("," $4 ",", "," u ",") {printf " %s", $1}' "$root/etc/group")
+	[[ -z $x ]] || { echo "$u ist auch in:$x"; bad=1; }
+	if ! pw=$(awk -F: -v u="$u" '$1 == u {print $2; f = 1; exit} END {exit !f}' "$root/etc/shadow" 2>/dev/null); then
+		echo "Passwort von $u nicht gefunden ($root/etc/shadow)"
+		bad=1
+	elif [[ $pw != '!'* && $pw != '*'* ]]; then
+		echo "Passwort von $u nicht gesperrt ($root/etc/shadow)"
+		bad=1
+	fi
+	((bad == 0))
 }
 
 # sshkeys_load   Beim Start, als root (lf --ssh-schluessel aus lf-ssh-schluessel.service). Legt in

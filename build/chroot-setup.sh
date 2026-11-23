@@ -79,6 +79,13 @@ EOF
 chmod 0440 /etc/sudoers.d/lf-claude
 visudo -cf /etc/sudoers.d/lf-claude
 
+log "Benutzer zum Lesen von LF-SSH: lf-ssh-leser"
+# Als er liest mtools beim Start die Kopie der Partition LF-SSH (sshkeys_fat in
+# rescue/lib/sshkeys.sh, #123). Ein eigener Systembenutzer mit eigener Gruppe, den sonst nichts
+# verwendet: ohne Home, ohne Shell, Passwort gesperrt, in keiner weiteren Gruppe. Der Selbsttest
+# prüft das (sshkeys_reader_check).
+useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin lf-ssh-leser
+
 log "Live-Benutzer und Autologin"
 # casper legt den Benutzer beim Boot an (sudo ohne Passwort).
 #
