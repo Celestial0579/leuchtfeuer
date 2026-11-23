@@ -58,6 +58,8 @@ Diese Schutzregeln gelten immer:
 - Der persistente Speicher ist nur die Partition `LF-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `lf.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 - Kein Programm kann sich per ptrace an ein anderes hängen, auch root nicht: ptrace ist ab dem Start gesperrt (`kernel.yama.ptrace_scope=3`).
+- Kein Kernel lässt sich per kexec laden, auch nicht von root: kexec ist ab dem Start gesperrt (`kernel.kexec_load_disabled=1`).
+- Nach einer Claude-Freigabe bleibt Claude bis zum Neustart gesperrt, und eine neue Freigabe gibt es erst danach. Sicher endet root-Zugriff nur mit dem Ausschalten am Netzschalter.
 
 Was ist drin
 ------------

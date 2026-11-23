@@ -30,6 +30,13 @@ mkdir -p "$LF_RUN"
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/disks.sh
+# Der Merker im Kernel, die Einhängungen und die Regel einer Freigabe für claude.sh (GHSA-874q-q3v7-m56v):
+# Merker 2, self/stat das echte des Lesers, keine Einhängung auf den Pfaden des Merkers, die Regel da.
+LF_FREIGABE_MERKER=$T/merker LF_FREIGABE_PROC=$T/fproc LF_FREIGABE_REGEL=$T/regel
+echo 2 >"$T/merker"
+: >"$T/regel"
+mkdir -p "$T/fproc/self" && ln -s /proc/self/stat "$T/fproc/self/stat"
+echo "25 21 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw" >"$T/fproc/self/mountinfo"
 # shellcheck disable=SC1091
 . rescue/lib/claude.sh
 LF_RUN="$T/run"
@@ -56,7 +63,8 @@ ui_menu() {
 	return 1
 }
 power_menu() { return 0; }
-claude_freigabe_hinweis() { :; }
+# Der Hinweis über dem Menü: Jeder Aufruf schreibt den Zustand mit, den er bekommt.
+claude_freigabe_hinweis() { printf '%s\n' "${1-ohne}" >>"$T/hinweise"; }
 # SSH (#99): Jeder Aufruf der Übernahme ins Protokoll steht in $T/ssh-sync, der Hinweis in $T/ssh-hinweis.
 tools_ssh_log_sync() { echo sync >>"$T/ssh-sync"; }
 tools_ssh_hinweis() { cat "$T/ssh-hinweis" 2>/dev/null; }
@@ -136,20 +144,29 @@ ui_menu() {
 durchlaeufe() {
 	DURCHLAEUFE=$1
 	shift
-	rm -f "$T/aufrufe" "$T/n" "$T/menu-n"
+	rm -f "$T/aufrufe" "$T/n" "$T/menu-n" "$T/hinweise"
 	printf '%s\n' "$@" >"$T/status"
 	(main_menu) >"$T/out" 2>&1
 	rc=$?
 }
 # zeile TEXT   Die erste Zeile in $T/aufrufe, die genau TEXT ist.
 zeile() { grep -n -m1 -x -F -- "$1" "$T/aufrufe" | cut -d: -f1; }
-durchlaeufe 2 "aus" "an, ohne Ablauf" "an, ohne Ablauf" "aus, Neustart empfohlen (letzte Freigabe bis 12:40)"
-check "die Regel ohne Timer gilt erst beim zweiten Durchlauf: Nach 5 s noch so, endet die Freigabe wie beim Ablauf, ein Dialog sagt es mit dem neuen Zustand" '((rc == 0)) && [[ ! -s $T/out && $(grep -cx "lf-freigabe status" "$T/aufrufe") == 4 && $(grep -cx "sudo lf-freigabe ablauf" "$T/aufrufe") == 1 ]] && grep -qx "sleep 5" "$T/aufrufe" && grep -qx "ui_info Claude-Freigabe" "$T/aufrufe" && grep -qxF "Bis eben galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: aus, Neustart empfohlen (letzte Freigabe bis 12:40)\n\nSicher endet root-Zugriff nur mit einem Neustart." "$T/aufrufe"'
+NN="Neustart nötig (letzte Freigabe bis 12:40): Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (nach der Freigabe kann Code aus ihr in jedem Programm als root mitlaufen)"
+# Je Durchlauf fragt das Menü den Zustand einmal (claude_freigabe_zustand), dazu claude_freigabe_ohne_timer.
+durchlaeufe 2 "aus" "aus" "an, ohne Ablauf" "an, ohne Ablauf" "$NN" "$NN"
+check "die Regel ohne Timer gilt erst beim zweiten Durchlauf: Nach 5 s noch so, endet die Freigabe wie beim Ablauf, ein Dialog sagt es mit dem neuen Zustand" '((rc == 0)) && [[ ! -s $T/out && $(grep -cx "lf-freigabe status" "$T/aufrufe") == 6 && $(grep -cx "sudo lf-freigabe ablauf" "$T/aufrufe") == 1 ]] && grep -qx "sleep 5" "$T/aufrufe" && grep -qx "ui_info Claude-Freigabe" "$T/aufrufe" && grep -qxF "Bis eben galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $NN\n\nClaude bleibt bis zum Neustart gesperrt. Sicher endet root-Zugriff nur mit dem Ausschalten am Netzschalter." "$T/aufrufe"'
 check "…nach dem Menü des ersten Durchlaufs, vor dem des zweiten" 'a=$(zeile "ui_menu 1") && b=$(zeile "sudo lf-freigabe ablauf") && c=$(zeile "ui_msg Claude-Freigabe") && d=$(zeile "ui_menu 2") && ((a < b && b < c && c < d))'
-durchlaeufe 2 "an bis 12:40" "an bis 12:40"
-check "mit Timer: Die Freigabe bleibt, das Menü wartet nicht" '((rc == 0)) && [[ $(grep -cx "lf-freigabe status" "$T/aufrufe") == 2 ]] && grep -qx "ui_menu 2" "$T/aufrufe" && ! grep -qE "^(sudo|sleep|ui_msg)" "$T/aufrufe"'
-durchlaeufe 2 "aus" "aus"
-check "ohne Freigabe: Das Menü wartet nicht" '((rc == 0)) && [[ $(grep -cx "lf-freigabe status" "$T/aufrufe") == 2 ]] && grep -qx "ui_menu 2" "$T/aufrufe" && ! grep -qE "^(sudo|sleep|ui_msg)" "$T/aufrufe"'
+durchlaeufe 2 "an bis 12:40" "an bis 12:40" "an bis 12:40" "an bis 12:40"
+check "mit Timer: Die Freigabe bleibt, das Menü wartet nicht" '((rc == 0)) && [[ $(grep -cx "lf-freigabe status" "$T/aufrufe") == 4 ]] && grep -qx "ui_menu 2" "$T/aufrufe" && ! grep -qE "^(sudo|sleep|ui_msg)" "$T/aufrufe"'
+durchlaeufe 2 "aus" "aus" "aus" "aus"
+check "ohne Freigabe: Das Menü wartet nicht" '((rc == 0)) && [[ $(grep -cx "lf-freigabe status" "$T/aufrufe") == 4 ]] && grep -qx "ui_menu 2" "$T/aufrufe" && ! grep -qE "^(sudo|sleep|ui_msg)" "$T/aufrufe"'
+# Das Menü merkt sich eine Freigabe über die Durchläufe (GHSA-874q-q3v7-m56v): Der Hinweis bekommt den
+# Zustand aus claude_freigabe_zustand im Menü selbst.
+KM="Neustart nötig: Das Menü kennt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem: aus"
+durchlaeufe 2 "aus" "an bis 12:40" "aus" "aus"
+check "sieht das Menü an bis, sagt lf-freigabe beim nächsten Durchlauf aus: Neustart nötig im Hinweis (GHSA-874q-q3v7-m56v)" '((rc == 0)) && [[ $(sed -n 1p "$T/hinweise") == "an bis 12:40" && $(sed -n 2p "$T/hinweise") == "$KM" ]]'
+durchlaeufe 2 "aus" "aus" "an, ohne Ablauf" "an, ohne Ablauf" "aus" "aus"
+check "endet eine Freigabe ohne Timer im Menü und sagt lf-freigabe danach aus: der Dialog und der Hinweis sagen Neustart nötig" '((rc == 0)) && [[ $(sed -n 2p "$T/hinweise") == "$KM" ]] && grep -qF "Zustand: $KM" "$T/aufrufe"'
 check "die Anleitung sagt es: beim Start und bei jeder Rückkehr ins Hauptmenü" 'grep -qF "Gilt beim Start des Assistenten oder bei jeder Rückkehr ins Hauptmenü noch eine Freigabe, aber kein Timer beendet sie, beendet er sie gleich, wie nach Ablauf der Zeit." docs/anleitung.md'
 
 echo "Ausgabe für andere Aufrufer:"

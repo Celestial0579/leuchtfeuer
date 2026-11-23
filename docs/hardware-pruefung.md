@@ -139,7 +139,7 @@ Nur mit Internet und eigenem Konto.
 6. **Aufgaben selbständig:** Im Assistenten ein Ziel wählen und bestätigen, dann Claude bitten, eine kleine Testdisk zu retten und ein paar Dateien daraus aufs Ziel zu kopieren.
    Erwartet: Claude benutzt `sudo lf-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `LF/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
 7. **Claude-Freigabe:** Werkzeuge > Claude-Freigabe, 1 Minute.
-   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Bis zum Neustart steht im Hauptmenü „Hinweis: Claude hatte volles sudo, Neustart empfohlen (letzte Freigabe bis HH:MM)“, die Statuszeile endet mit „Neustart empfohlen (letzte Freigabe bis HH:MM)“. Nach Beenden > Neustart ist beides weg. Claude kann `lf-freigabe an` nicht selbst auslösen. Verlängern im Menü fragt an der Konsole nach und gilt nur mit „j“.
+   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Claude kann `lf-freigabe an` nicht selbst auslösen. Verlängern im Menü fragt an der Konsole nach und gilt nur mit „j“. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf, und Leuchtfeuer beendet Claude. Auf tty1 steht danach „Neustart nötig: Claude startet erst nach einem Neustart wieder.“, bis zum Neustart steht im Hauptmenü „ACHTUNG: Neustart nötig (letzte Freigabe bis HH:MM). Claude bleibt bis dahin gesperrt. Ausschalten: Netzschalter gedrückt halten, bis das Gerät aus ist“. Claude (CLI und Desktop) startet nicht, Werkzeuge > Claude-Freigabe schaltet keine neue frei, und ein kurzer Druck auf den Netzschalter tut nichts. Netzschalter gedrückt halten, bis das Gerät aus ist, dann einschalten: Danach ist alles weg, und Claude startet wieder.
 8. **Claude Desktop als lf-claude** (in QEMU nicht prüfbar):
    - Die App startet im Vollbild, das Fenster ist sichtbar und bedienbar, Login klappt, nach Strg+Q geht es im Assistenten weiter.
    - Nach einem Neustart mit persistentem Speicher ist der Login noch da.
@@ -155,7 +155,7 @@ Nur mit Internet und eigenem Konto.
 sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
-Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor steht `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`. Die Datei gehört ins Issue.
+Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`, `LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)` und `LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)`. Die Datei gehört ins Issue. Der Selbsttest schaltet eine Freigabe frei und lässt sie ablaufen: Danach ist Claude bis zum Neustart gesperrt. Den Selbsttest darum gleich nach dem Einschalten starten und danach am Netzschalter ausschalten (gedrückt halten).
 
 10 SSH
 ------
