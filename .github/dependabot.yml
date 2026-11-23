@@ -11,3 +11,14 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "CI"
+  # Basis-Image des ISO-Builds: build/Dockerfile legt ubuntu:26.04 per Digest fest. Dependabot schlägt
+  # einen neuen Digest unter demselben Tag als PR vor, eine andere Ubuntu-Fassung nicht.
+  - package-ecosystem: docker
+    directory: /build
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: ubuntu
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "Build"
