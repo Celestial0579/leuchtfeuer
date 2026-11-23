@@ -74,6 +74,8 @@ e2fsprogs
 xfsprogs
 btrfs-progs
 dosfstools
+# liest LF-SSH, ohne es einzuhängen (rescue/lib/sshkeys.sh)
+mtools
 exfatprogs
 f2fs-tools
 lvm2

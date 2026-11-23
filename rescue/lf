@@ -80,11 +80,12 @@ selftest() {
 	selftest_lauscht || ok=0
 	selftest_ssh_lokal || ok=0
 	selftest_ssh "$dir" || ok=0
+	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0
 	selftest_ptrace || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
-		photorec qemu-img qemu-nbd whiptail tmux jq claude claude-desktop cage gnome-keyring-daemon; do
+		photorec qemu-img qemu-nbd whiptail tmux jq mdir mcopy claude claude-desktop cage gnome-keyring-daemon; do
 		command -v "$t" >/dev/null || { echo "LF-SELFTEST: Werkzeug fehlt: $t"; ok=0; }
 	done
 	# Übergang von firestrike-rescue, gilt eine Beta lang: Die alten frs-Befehle zeigen auf die
@@ -670,6 +671,38 @@ selftest_ssh() {
 	done
 	((good)) && echo "LF-SELFTEST: SSH: nur Schlüssel aus $SSHKEYS_DIR oder nur das Einmal-Passwort, nur rescue, keine Weiterleitung"
 	((good))
+}
+
+# selftest_lfssh ORDNER   Das Lesen von LF-SSH (#116) echt, mit setpriv und mtools, an einem eigenen
+#   FAT-Abbild statt des Sticks, darin eine versteckte authorized_keys ohne Schlüssel: sshkeys_image
+#   kopiert es, sshkeys_take liest die Datei daraus als nobody, und eine Kopie, die nur root lesen
+#   darf, liest mtools nicht. ORDNER entsteht neu und ist danach wieder weg.
+selftest_lfssh() {
+	local d=$1 img msg=""
+	rm -rf -- "$d"
+	if ! install -d -m 0755 "$d" "$d/ssh" || ! echo "# Selbsttest" >"$d/authorized_keys" ||
+		! mkfs.vfat -C -n LF-SSH "$d/lf-ssh.img" 128 >/dev/null ||
+		! MTOOLSRC=/dev/null mcopy -i "$d/lf-ssh.img" "$d/authorized_keys" ::/authorized_keys ||
+		! MTOOLSRC=/dev/null mattrib +h -i "$d/lf-ssh.img" ::/authorized_keys ||
+		! install -m 0600 "$d/lf-ssh.img" "$d/nur-root.img"; then
+		msg="Das Abbild für die Probe ließ sich nicht anlegen."
+	elif ! img=$(SSHKEYS_DIR=$d/ssh sshkeys_image "$d/lf-ssh.img"); then
+		msg="Die Probe ließ sich nicht kopieren (sshkeys_image)."
+	else
+		: >"$d/ssh/meldungen"
+		SSHKEYS_DIR=$d/ssh sshkeys_take "$img"
+		if [[ $(cat "$d/ssh/status" 2>/dev/null) != gelesen ]] || ! cmp -s "$d/ssh/eingang" "$d/authorized_keys"; then
+			msg="mtools las als nobody die versteckte Datei der Probe nicht."
+		elif sshkeys_fat mdir -a -b -i "$d/nur-root.img" ::/ >/dev/null 2>&1; then
+			msg="mtools liest auch, was nur root lesen darf."
+		fi
+	fi
+	rm -rf -- "$d"
+	if [[ -n $msg ]]; then
+		echo "LF-SELFTEST: LF-SSH: $msg"
+		return 1
+	fi
+	echo "LF-SELFTEST: LF-SSH: mtools liest als nobody, auch versteckte Dateien, aber nicht, was nur root lesen darf"
 }
 
 # selftest_ptrace   ptrace ist gesperrt (#85): kernel.yama.ptrace_scope ist 3. Den Wert setzt
