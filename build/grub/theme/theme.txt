@@ -41,12 +41,15 @@ terminal-font: "@MENU_FONT@"
 
 # Der Countdown steht unter dem Balken, nicht darin: Keine Schriftfarbe ist auf der Füllung und auf
 # dem Grund des Balkens zugleich lesbar. Stahl hell auf Grund #141715 hat 10,26:1 (#127).
+# GRUB zeichnet einen progress_bar nie niedriger als 28 Pixel, darum steht der Text 34 Pixel tiefer.
+# Ein label setzt @TIMEOUT_NOTIFICATION_LONG@ nicht ein: Sein Text ist eine Vorlage, in die GRUB
+# für %d die verbleibenden Sekunden schreibt.
 + progress_bar {
 	id = "__timeout__"
 	left = 15%
 	top = 80%
 	width = 70%
-	height = 12
+	height = 28
 	fg_color = "#DB7745"
 	bg_color = "#212B33"
 	border_color = "#33414B"
@@ -55,11 +58,11 @@ terminal-font: "@MENU_FONT@"
 + label {
 	id = "__timeout__"
 	left = 15%
-	top = 80%+20
+	top = 80%+34
 	width = 70%
 	height = 20
 	align = "center"
-	text = "@TIMEOUT_NOTIFICATION_LONG@"
+	text = "Der markierte Eintrag startet automatisch in %d s."
 	font = "@SMALL_FONT@"
 	color = "#B4C6D1"
 }

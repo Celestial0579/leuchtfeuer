@@ -105,8 +105,13 @@ BALKEN=$(komponente progress_bar)
 TEXT=$(komponente label)
 GRUND=$(sed -n 's/^desktop-color: "\(.*\)"$/\1/p' "$THEME")
 check "der Balken zeigt keinen Text mehr" '[[ -n $BALKEN && -z $(wert text "$BALKEN") && -z $(wert text_color "$BALKEN") ]]'
-check "der Countdown steht als eigener Text darunter (label mit der id __timeout__)" '[[ $(wert text "$TEXT") == "@TIMEOUT_NOTIFICATION_LONG@" && $(wert top "$TEXT") == "$(wert top "$BALKEN")+"* ]]'
-check "der Text beginnt erst unter dem Balken" 'h=$(wert height "$BALKEN") o=$(wert top "$TEXT"); o=${o##*+}; [[ $h =~ ^[0-9]+$ && $o =~ ^[0-9]+$ ]] && ((o >= h + 4))'
+check "der Countdown steht als eigener Text darunter (label mit der id __timeout__)" '[[ -n $TEXT && $(wert top "$TEXT") == "$(wert top "$BALKEN")+"* ]]'
+# Ein label setzt keine Platzhalter wie @TIMEOUT_NOTIFICATION_LONG@ ein, GRUB zeigt sie wörtlich.
+# Sein Text ist eine Vorlage für printf, %d sind die verbleibenden Sekunden.
+check "sein Text ist eine Vorlage mit genau einem %d, ohne Platzhalter" 't=$(wert text "$TEXT"); [[ $t == *%d* && ${t/\%d/} != *%* && $t != *@* ]]'
+# GRUB zeichnet einen progress_bar nie niedriger als 28 Pixel (Mindestgröße in gui_progress_bar.c).
+check "der Balken ist so hoch angegeben, wie GRUB ihn zeichnet (mindestens 28 Pixel)" 'h=$(wert height "$BALKEN"); [[ $h =~ ^[0-9]+$ ]] && ((h >= 28))'
+check "der Text beginnt erst unter dem Balken" 'h=$(wert height "$BALKEN") o=$(wert top "$TEXT"); o=${o##*+}; [[ $h =~ ^[0-9]+$ && $o =~ ^[0-9]+$ ]] && { ((h >= 28)) || h=28; ((o >= h + 4)); }'
 check "Stahl hell auf dem Grund: 10,26:1, mindestens 4,5:1 (WCAG AA)" '[[ $(wert color "$TEXT") == "#B4C6D1" && $(kontrast "$(wert color "$TEXT")" "$GRUND") == 10.26 ]]'
 
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
