@@ -32,13 +32,14 @@ mkdir -p "$LF_RUN"
 . rescue/lib/disks.sh
 # Der Merker im Kernel, die Einhängungen und die Regel einer Freigabe für claude.sh (GHSA-874q-q3v7-m56v):
 # Merker 2, self/stat das echte des Lesers, keine Einhängung auf den Pfaden des Merkers, die Regel da.
-LF_FREIGABE_MERKER=$T/merker LF_FREIGABE_PROC=$T/fproc LF_FREIGABE_REGEL=$T/regel
+# Die Pfade setzt der Test nach dem Laden von claude.sh (#129).
 echo 2 >"$T/merker"
 : >"$T/regel"
 mkdir -p "$T/fproc/self" && ln -s /proc/self/stat "$T/fproc/self/stat"
 echo "25 21 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw" >"$T/fproc/self/mountinfo"
 # shellcheck disable=SC1091
 . rescue/lib/claude.sh
+CLAUDE_FREIGABE_MERKER=$T/merker CLAUDE_FREIGABE_PROC=$T/fproc CLAUDE_FREIGABE_REGEL=$T/regel
 LF_RUN="$T/run"
 
 fails=0
@@ -175,6 +176,18 @@ text=$(disks_overview)
 check "disks_overview gibt Kopf, zwei Disks und den Grund aus" '[[ $(wc -l <<<"$text") == 4 && $(head -n 1 <<<"$text") == "GERÄT"* ]]'
 disks_overview_scan
 check "disks_overview_scan setzt beide Werte im Aufrufer" '((DISKS_ANY_BAD == 1)) && [[ $DISKS_OVERVIEW == "$text" ]]'
+
+echo "Pfade der Claude-Freigabe (#129):"
+# Merker, /proc, Regel und Wartezeit der Freigabe stehen in claude.sh fest. Die Tests setzen sie nach dem
+# Laden, wie oben. Aus der Umgebung übernimmt claude.sh sie nicht.
+fest=$(
+	export LF_FREIGABE_MERKER=$T/x LF_FREIGABE_PROC=$T/x LF_FREIGABE_REGEL=$T/x LF_FREIGABE_WARTE=0
+	# shellcheck disable=SC1091
+	. rescue/lib/claude.sh
+	echo "$CLAUDE_FREIGABE_MERKER|$CLAUDE_FREIGABE_PROC|$CLAUDE_FREIGABE_REGEL|$CLAUDE_FREIGABE_WARTE"
+)
+check "claude.sh nimmt Merker, /proc, Regel und Wartezeit der Freigabe nicht aus der Umgebung" '[[ $fest == "/proc/sys/kernel/unprivileged_bpf_disabled|/proc|/etc/sudoers.d/lf-claude-freigabe|5" ]]'
+check "claude.sh liest keine Variable LF_FREIGABE_*" '! grep -q "LF_FREIGABE_" rescue/lib/claude.sh'
 
 if ((fails)); then
 	echo "unit-main-menu: $fails Fehler"

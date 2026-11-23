@@ -22,17 +22,18 @@ CLAUDE_SLICE=lf-claude.slice
 # Der Rückstand nach einer Freigabe (RESIDUE in lf-freigabe).
 CLAUDE_FREIGABE_RUECKSTAND=/run/lf/claude-freigabe-rueckstand
 # Der Merker im Kernel für eine Freigabe seit dem Start (MERKER in lf-freigabe, GHSA-874q-q3v7-m56v):
-# 2 nach dem Start, 1 von der ersten Freigabe bis zum Neustart. LF_FREIGABE_MERKER nennt für Tests
-# eine andere Datei.
-CLAUDE_FREIGABE_MERKER=${LF_FREIGABE_MERKER:-/proc/sys/kernel/unprivileged_bpf_disabled}
+# 2 nach dem Start, 1 von der ersten Freigabe bis zum Neustart. Die Pfade und die Wartezeit hier kommen
+# nie aus der Umgebung, Tests setzen sie nach dem Laden (#129).
+CLAUDE_FREIGABE_MERKER=/proc/sys/kernel/unprivileged_bpf_disabled
 # Was der Pfad des Merkers zeigt, hängt auch an Einhängungen. Jede auf diesen Pfaden zählt als Freigabe
-# seit dem Start (MERKER_MOUNTS in lf-freigabe, claude_freigabe_eingehaengt). LF_FREIGABE_PROC nennt für
-# Tests ein anderes /proc.
+# seit dem Start (MERKER_MOUNTS in lf-freigabe, claude_freigabe_eingehaengt). CLAUDE_FREIGABE_PROC ist
+# das /proc, in dem sie nachsieht.
 CLAUDE_FREIGABE_EINHAENGUNGEN=(/proc/sys /proc/sys/kernel /proc/sys/kernel/unprivileged_bpf_disabled)
-CLAUDE_FREIGABE_PROC=${LF_FREIGABE_PROC:-/proc}
-# Die Regel einer laufenden Freigabe (RULE in lf-freigabe). LF_FREIGABE_REGEL nennt für Tests eine
-# andere Datei.
-CLAUDE_FREIGABE_REGEL=${LF_FREIGABE_REGEL:-/etc/sudoers.d/lf-claude-freigabe}
+CLAUDE_FREIGABE_PROC=/proc
+# Die Regel einer laufenden Freigabe (RULE in lf-freigabe).
+CLAUDE_FREIGABE_REGEL=/etc/sudoers.d/lf-claude-freigabe
+# Sekunden, die claude_freigabe_ohne_timer wartet, bevor eine Regel ohne Timer als solche gilt.
+CLAUDE_FREIGABE_WARTE=5
 # Hat dieses Menü seit seinem Start eine Freigabe gesehen oder selbst freigeschaltet (1)? Dann bleibt
 # es dabei bis zum Neustart, gleich, was lf-freigabe und /proc später zeigen (GHSA-874q-q3v7-m56v).
 # Nie aus der Umgebung.
@@ -155,7 +156,7 @@ claude_gesperrt_text() {
 #   Durchlauf des Hauptmenüs (#115): Gilt noch die Regel einer Freigabe, aber kein Timer beendet sie
 #   ("an, ohne Ablauf"), endet sie wie beim Ablauf, mit Prüfung des Rückstands (lf-freigabe
 #   ablauf). Beim Freischalten und Verlängern liegt zwischen Regel und Timer ein kurzer Moment:
-#   Darum gilt es erst, wenn status nach LF_FREIGABE_WARTE Sekunden (Vorgabe 5) noch dasselbe sagt.
+#   Darum gilt es erst, wenn status nach CLAUDE_FREIGABE_WARTE Sekunden (5) noch dasselbe sagt.
 #   Gewartet wird nur, wenn status zuerst "an, ohne Ablauf" sagt. Mit "ui" steht solange ein Hinweis
 #   auf dem Bildschirm. Gibt nach dem Ende den Zustand aus (claude_freigabe_zustand) und endet
 #   mit 0, sonst mit 1.
@@ -166,7 +167,7 @@ claude_freigabe_ohne_timer() {
 	# Das Menü hat eine Freigabe gesehen und merkt sich sie (GHSA-874q-q3v7-m56v).
 	CLAUDE_FREIGABE_GESEHEN=1
 	[[ ${1:-} == ui ]] && ui_info "Claude-Freigabe" "Eine Claude-Freigabe gilt noch, ohne Timer, der sie beendet. Sie endet gleich wie nach Ablauf der Zeit …"
-	sleep "${LF_FREIGABE_WARTE:-5}"
+	sleep "$CLAUDE_FREIGABE_WARTE"
 	s=$(lf-freigabe status 2>/dev/null)
 	[[ $s == "an, ohne Ablauf" ]] || return 1
 	log "Claude-Freigabe ohne Timer (an, ohne Ablauf): endet wie beim Ablauf"
