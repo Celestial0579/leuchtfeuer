@@ -7,7 +7,9 @@
 # nur nach einer Bestätigung herunter (Vorgabe Nein). Ohne so eine Zeile fragt es nicht.
 # Dazu, ohne lf-freigabe: claude_freigabe_ohne_timer beendet eine Freigabe ohne Timer erst, wenn
 # status nach dem Warten noch dasselbe sagt, und lf ruft es beim Start auf, im Menü vor dem
-# Entsperren von LF-DATA und vor dem Selbsttest. Das Ende selbst prüft tests/unit-lf-freigabe.sh.
+# Entsperren von LF-DATA und vor dem Selbsttest. Den Dialog danach teilt sich der Start mit dem
+# Hauptmenü, das es bei jedem Durchlauf aufruft (claude_freigabe_ende_text, tests/unit-main-menu.sh,
+# #115). Das Ende selbst prüft tests/unit-lf-freigabe.sh.
 # Dialoge, tmux, sudo und systemctl sind Attrappen.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -135,6 +137,8 @@ l_persist=$(grep -n '^persist_startup$' rescue/lf | cut -d: -f1)
 l_banner=$(grep -n '^banner$' rescue/lf | cut -d: -f1)
 check "im Menü: nach dem Start der Oberfläche, vor dem Entsperren von LF-DATA" '[[ -n $l_end && -n $l_persist && -n $l_banner ]] && ((l_banner < l_end && l_end < l_persist))'
 check "vor dem Selbsttest, ohne Dialog" 'sed -n "/^--selftest)$/,/^	;;$/p" rescue/lf | grep -A3 "^	if freigabe_ende=\$(claude_freigabe_ohne_timer); then$" | grep -q "^	selftest$"'
+start_dialog='	ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Beim Start galt noch" "$freigabe_ende")"'
+check "danach ein Dialog mit dem neuen Zustand, Text wie bisher (claude_freigabe_ende_text, #115)" '[[ -n $l_end && $(sed -n "$((l_end + 1))p" rescue/lf) == "$start_dialog" && $(claude_freigabe_ende_text "Beim Start galt noch" "aus, Neustart empfohlen (letzte Freigabe bis 12:40)") == "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: aus, Neustart empfohlen (letzte Freigabe bis 12:40)\n\nSicher endet root-Zugriff nur mit einem Neustart." && $(claude_freigabe_ende_text "Beim Start galt noch" "") == *"\n\nZustand: unbekannt\n\n"* ]]'
 
 echo
 if ((fails)); then

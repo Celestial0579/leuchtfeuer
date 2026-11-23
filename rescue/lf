@@ -1504,8 +1504,13 @@ s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(
 # Hauptmenü
 # ---------------------------------------------------------------------------
 main_menu() {
-	local overview default choice hint ssh extra=()
+	local overview default choice hint ssh freigabe_ende extra=()
 	while true; do
+		# Gilt die Regel einer Freigabe ohne Timer, endet sie hier wie beim Start, bei jedem
+		# Durchlauf (#115).
+		if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
+			ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Bis eben galt noch" "$freigabe_ende")"
+		fi
 		ui_info "Leuchtfeuer" "Prüfe angeschlossene Disks (SMART) …"
 		# Direkt aufrufen, nicht in $( … ): Aus einer Subshell käme DISKS_ANY_BAD nicht zurück.
 		disks_overview_scan
@@ -1622,7 +1627,7 @@ banner
 log "Leuchtfeuer $LF_VERSION gestartet"
 # Eine Freigabe ohne Timer endet vor allem anderen, auch vor dem Entsperren von LF-DATA (#84).
 if freigabe_ende=$(claude_freigabe_ohne_timer ui); then
-	ui_msg "Claude-Freigabe" "Beim Start galt noch eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $(text_clean 300 <<<"${freigabe_ende:-unbekannt}")\n\nSicher endet root-Zugriff nur mit einem Neustart."
+	ui_msg "Claude-Freigabe" "$(claude_freigabe_ende_text "Beim Start galt noch" "$freigabe_ende")"
 fi
 persist_startup
 sshkeys_notice

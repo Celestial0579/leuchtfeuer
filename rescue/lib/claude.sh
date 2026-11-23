@@ -49,11 +49,12 @@ claude_freigabe_hinweis() {
 	return 0
 }
 
-# claude_freigabe_ohne_timer [ui]   Beim Start von lf (Menü und Selbsttest, #84): Gilt noch die
-#   Regel einer Freigabe, aber kein Timer beendet sie ("an, ohne Ablauf"), endet sie wie beim
-#   Ablauf, mit Prüfung des Rückstands (lf-freigabe ablauf). Beim Freischalten und Verlängern liegt
-#   zwischen Regel und Timer ein kurzer Moment: Darum gilt es erst, wenn status nach
-#   LF_FREIGABE_WARTE Sekunden (Vorgabe 5) noch dasselbe sagt. Mit "ui" steht solange ein Hinweis
+# claude_freigabe_ohne_timer [ui]   Beim Start von lf (Menü und Selbsttest, #84) und bei jedem
+#   Durchlauf des Hauptmenüs (#115): Gilt noch die Regel einer Freigabe, aber kein Timer beendet sie
+#   ("an, ohne Ablauf"), endet sie wie beim Ablauf, mit Prüfung des Rückstands (lf-freigabe
+#   ablauf). Beim Freischalten und Verlängern liegt zwischen Regel und Timer ein kurzer Moment:
+#   Darum gilt es erst, wenn status nach LF_FREIGABE_WARTE Sekunden (Vorgabe 5) noch dasselbe sagt.
+#   Gewartet wird nur, wenn status zuerst "an, ohne Ablauf" sagt. Mit "ui" steht solange ein Hinweis
 #   auf dem Bildschirm. Gibt nach dem Ende status aus und endet mit 0, sonst mit 1.
 claude_freigabe_ohne_timer() {
 	local s
@@ -63,10 +64,17 @@ claude_freigabe_ohne_timer() {
 	sleep "${LF_FREIGABE_WARTE:-5}"
 	s=$(lf-freigabe status 2>/dev/null)
 	[[ $s == "an, ohne Ablauf" ]] || return 1
-	log "Claude-Freigabe ohne Timer beim Start (an, ohne Ablauf): endet wie beim Ablauf"
+	log "Claude-Freigabe ohne Timer (an, ohne Ablauf): endet wie beim Ablauf"
 	run sudo lf-freigabe ablauf
 	lf-freigabe status 2>/dev/null
 	return 0
+}
+
+# claude_freigabe_ende_text ANFANG ZUSTAND   Der Text des Dialogs, nachdem claude_freigabe_ohne_timer
+#   eine Freigabe beendet hat, beim Start von lf wie im Hauptmenü: ANFANG beginnt den ersten Satz,
+#   ZUSTAND ist die Ausgabe von claude_freigabe_ohne_timer (status danach).
+claude_freigabe_ende_text() {
+	echo "$1 eine Claude-Freigabe ohne Timer. Sie ist jetzt beendet wie nach Ablauf der Zeit, mit Prüfung des Rückstands.\n\nZustand: $(text_clean 300 <<<"${2:-unbekannt}")\n\nSicher endet root-Zugriff nur mit einem Neustart."
 }
 
 # claude_freigabe_netzschalter   Die Zeilen im Rückstand der letzten Freigabe, die sagen, am
