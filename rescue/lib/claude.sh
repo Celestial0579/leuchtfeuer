@@ -244,6 +244,19 @@ claude_freigabe_menu() {
 	case $c in
 	aus) claude_freigabe_beenden ;;
 	mehr)
+		# Das Menü kann lange offen gewesen sein (#98): Ist die Freigabe inzwischen zu Ende, gibt es
+		# nichts zu verlängern. "an 30" wäre dann eine neue Freigabe, und die gibt es nur mit ihrem
+		# Dialog und nach einer Freigabe erst nach dem Neustart.
+		claude_freigabe_zustand >/dev/null
+		s=$CLAUDE_FREIGABE_STAND
+		case $s in
+		"an bis "* | "an, ohne Ablauf") ;;
+		*)
+			log "Claude-Freigabe: nicht verlängert, sie ist zu Ende ($s)"
+			ui_msg "Claude-Freigabe" "Die Freigabe ist inzwischen zu Ende, es gibt nichts mehr zu verlängern. $(claude_gesperrt_text "$s")"
+			return 0
+			;;
+		esac
 		# lf-freigabe fragt selbst am Terminal nach: Verlängern gilt nur mit einem "j" hier.
 		clear
 		echo "Claude-Freigabe verlängern"
