@@ -2957,6 +2957,19 @@ confirm() {
 	[[ $answer == [jJ] || $answer == [jJ][aA] ]]
 }
 
+# stop_late   In jeder Runde des Endes nach dem Beenden der Prozesse (stop_root_in_claude,
+#   stop_granted): Was dabei noch gestartet oder angelegt ist (etwa über OnSuccess= einer beendeten
+#   Einheit), beenden oder sperren: neue Einheiten, at-Aufträge, cron-Dateien. Danach noch einmal die
+#   Schlüssel von LF-SSH: Was aus der Freigabe bis hierher noch lief, kann unter SSH_DIR noch etwas
+#   geändert haben (#117).
+stop_late() {
+	stop_new_units
+	stop_new_at
+	disable_new_cron
+	disable_ssh_keys
+	return 0
+}
+
 off() {
 	local r l old had=0
 	# Gab es eine Freigabe? Dann empfiehlt status danach einen Neustart (LAST).
@@ -3004,10 +3017,7 @@ off() {
 	systemctl stop "$UNIT.timer" 2>/dev/null || true
 	stop_root_in_claude
 	stop_granted
-	# Was beim Beenden noch gestartet ist (etwa über OnSuccess= einer beendeten Einheit).
-	stop_new_units
-	# Was aus der Freigabe bis hierher noch lief, kann unter SSH_DIR noch etwas geändert haben.
-	disable_ssh_keys
+	stop_late
 	menv_restore
 	if [[ -e $LINGER/$CLAUDE ]]; then loginctl disable-linger "$CLAUDE" 2>/dev/null || true; fi
 	# Hält logind die Sperre des Netzschalters noch (nach dem Beenden, vor der Prüfung des Rückstands:
@@ -3018,9 +3028,9 @@ off() {
 	# der Grundregel, das sich geändert haben kann. Gibt es eine Zeile aus lock_lines, bleibt die
 	# Grundregel bis zum Neustart gesperrt (die Meldung nennt jeden Grund, auch jede Einhängung), und
 	# ohne sie bleibt auch kein Dienst und kein Job der Grundregel stehen (kept_unit, kept_job): noch
-	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, danach disable_ssh_keys, dann
-	# neu prüfen. Sonst bleibt sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt,
-	# ohne ist sie wieder frei.
+	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, danach wie in der ersten
+	# stop_late, dann neu prüfen. Sonst bleibt sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand
+	# abschließt, ohne ist sie wieder frei.
 	r=$(end_residue)
 	l=$(lock_lines <<<"$r")
 	if [[ -n $l ]] && base_rule_file >/dev/null; then
@@ -3028,7 +3038,7 @@ off() {
 		stop_new_units
 		stop_root_in_claude
 		stop_granted
-		disable_ssh_keys
+		stop_late
 		r=$(end_residue)
 	fi
 	# Mit Rückstand bleibt sie gesperrt. Hat etwas die Sperre aus dem ersten Schritt aufgehoben (etwa
