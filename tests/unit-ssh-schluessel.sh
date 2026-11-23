@@ -5,7 +5,10 @@
 #   Zeilenenden von Windows, BOM, Kommentare nur gefiltert, private Schlüssel nie.
 # - sshkeys_load: nur vom geprüften Startmedium, nur eine Partition LF-SSH mit FAT, nie eingehängt:
 #   root kopiert nur ihre Bytes, höchstens so viele, wie LF-SSH im ISO groß ist, und mtools liest
-#   daraus als nobody eine Datei bis 64 KiB (#116). Die Anleitung nennt die Grenze.
+#   daraus eine Datei bis 64 KiB (#116), als eigener Systembenutzer lf-ssh-leser. Die Kopie gehört
+#   root, lesen darf sie nur seine Gruppe (#123). Die Anleitung nennt die Grenze.
+# - sshkeys_reader_check: lf-ssh-leser so, wie build/chroot-setup.sh ihn anlegt, und von nichts
+#   sonst verwendet (#123).
 # - Bestätigen beim Einschalten (alle zusammen oder je neuem Schlüssel), restrict,pty, mit Schlüssel
 #   kein Passwort, ohne kein Schlüssel.
 # - Hostschlüssel mit verschlüsseltem Speicher und die Markierung nach einer Freigabe (lf-freigabe).
@@ -295,13 +298,14 @@ fat() {
 	[[ -z $(ls -A "$2") ]] || MTOOLSRC=/dev/null mcopy -s -i "$1" "$2"/* ::/
 }
 # So startet sshkeys_fat mtools, danach folgt der Befehl von mtools (mdir oder mcopy).
-RD="--reuid=nobody --regid=nogroup --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20"
+RD="--reuid=lf-ssh-leser --regid=lf-ssh-leser --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20"
 # setpriv schreibt die Argumente mit, dazu die Rechte des Abbilds (nach -i) und seines Ordners, und
 # führt dann den Befehl nach -- als der Benutzer dieses Tests aus, ohne die Umgebung (wie
-# --reset-env). Ist MCOPY_RC nicht 0, endet mcopy danach mit diesem Status. Mit NUR_NOBODY=1 liest
-# es wie nobody nach chown nur ein Abbild mit 0400. chown schreibt nur mit, head auch die Argumente,
-# bevor es liest.
-MCOPY_RC=0 NUR_NOBODY=0
+# --reset-env). Ist MCOPY_RC nicht 0, endet mcopy danach mit diesem Status. Mit NUR_LESER=1 liest
+# es wie lf-ssh-leser nach chown root:lf-ssh-leser nur ein Abbild mit 0440 in einem Ordner mit 0710.
+# chown schreibt nur mit (mit CHOWN_ALS statt Benutzer und Gruppe aus dem Aufruf), head auch die
+# Argumente, bevor es liest.
+MCOPY_RC=0 NUR_LESER=0 CHOWN_ALS=""
 setpriv() {
 	local a img="" prev=""
 	printf '%s\n' "$*" >>"$T/setpriv"
@@ -310,13 +314,13 @@ setpriv() {
 		prev=$a
 	done
 	[[ -z $img ]] || stat -c '%a %n' -- "${img%/*}" "$img" >>"$T/setpriv-rechte"
-	if ((NUR_NOBODY)) && [[ -n $img && $(stat -c %a -- "$img") != 400 ]]; then return 1; fi
+	if ((NUR_LESER)) && [[ -n $img && $(stat -c %a -- "${img%/*}" "$img" | tr '\n' ' ') != "710 440 " ]]; then return 1; fi
 	while (($#)) && [[ $1 != -- ]]; do shift; done
 	shift
 	env -i PATH="$PATH" HOME=/nonexistent "$@" || return
 	[[ " $* " != *" mcopy "* ]] || return "$MCOPY_RC"
 }
-chown() { printf '%s\n' "$*" >>"$T/chown"; }
+chown() { if [[ -n $CHOWN_ALS ]]; then printf -- '-- %s %s\n' "$CHOWN_ALS" "${*: -1}"; else printf '%s\n' "$*"; fi >>"$T/chown"; }
 head() {
 	printf '%s\n' "$*" >>"$T/head"
 	command head "$@"
@@ -346,13 +350,13 @@ fat "$IMG" "$M"
 check "wie private Schlüssel: id_… ohne .pub und .ppk, Schreibweise egal, keine Ordner" '[[ $(sshkeys_names "$IMG" | sshkeys_private_files | LC_ALL=C sort | tr "\n" " ") == "ID_RSA Schluessel.PPK id_ed25519 " ]]'
 take
 check "ohne authorized_keys: keine-datei, eine Meldung je privatem Schlüssel" '[[ $ST == keine-datei && $(grep -c "wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen") == 3 ]] && grep -q "^Auf LF-SSH liegt id_ed25519, wohl ein privater Schlüssel. Er wird nie verwendet." "$SSHKEYS_DIR/meldungen"'
-check "mtools liest nur als nobody: ohne Gruppen und Capabilities, mit no_new_privs, ohne die Umgebung, mit Zeitgrenze" 'nur_als_leser'
+check "mtools liest nur als lf-ssh-leser: ohne weitere Gruppen und ohne Capabilities, mit no_new_privs, ohne die Umgebung, mit Zeitgrenze" 'nur_als_leser'
 rm -rf "$M"
 mkdir -p "$M"
 pub ed1 >"$M/authorized_keys.txt"
 take
 check "authorized_keys.txt gilt auch" '[[ $ST == gelesen && ! -s $SSHKEYS_DIR/meldungen ]] && cmp -s "$SSHKEYS_DIR/eingang" "$M/authorized_keys.txt"'
-check "…gelesen mit mcopy als nobody, höchstens 64 KiB und ein Byte" 'nur_als_leser && grep -qxF -- "$RD mcopy -n -i $IMG ::/authorized_keys.txt -" "$T/setpriv" && grep -qx -- "-c 65537" "$T/head"'
+check "…gelesen mit mcopy als lf-ssh-leser, höchstens 64 KiB und ein Byte" 'nur_als_leser && grep -qxF -- "$RD mcopy -n -i $IMG ::/authorized_keys.txt -" "$T/setpriv" && grep -qx -- "-c 65537" "$T/head"'
 cp "$M/authorized_keys.txt" "$M/authorized_keys"
 take
 check "beide Dateien: keine gilt" '[[ $ST == zwei-dateien && ! -e $SSHKEYS_DIR/eingang ]]'
@@ -459,8 +463,8 @@ check "geladen: Zustand ok 2, die falsche Zeile gemeldet (LF-SSH so groß wie im
 check "Ordner 0755 (sshd liest als rescue), Kandidaten und Meldungen nur für root (0600)" '[[ $(stat -c %a "${SSHKEYS_DIR%/*}") == 755 && $(stat -c %a "$SSHKEYS_DIR") == 755 && $(stat -c %a "$SSHKEYS_DIR/kandidaten") == 600 && $(stat -c %a "$SSHKEYS_DIR/meldungen") == 600 ]]'
 check "authorized_keys ist leer, bis SSH eingeschaltet ist (0644)" '[[ -f $SSHKEYS_DIR/authorized_keys && ! -s $SSHKEYS_DIR/authorized_keys && $(stat -c %a "$SSHKEYS_DIR/authorized_keys") == 644 ]]'
 check "gefragt werden nur die Partitionen des Startmediums" '[[ $(cat "$T/lsblk") == "-J -p -o NAME,TYPE,LABEL,PARTLABEL /dev/sdz" ]]'
-check "nie eingehängt: root kopiert nur die Bytes von LF-SSH, höchstens so viele wie im ISO und eins, mtools liest die Kopie als nobody" '[[ ! -e $T/mount && ! -e $T/umount ]] && grep -qxF -- "-c $((LFSSH_KIB * 1024 + 1)) -- $D/sdz3" "$T/head" && nur_als_leser && grep -qE " -i $SSHKEYS_DIR/lesen\.[A-Za-z0-9]{6}/[A-Za-z0-9]{10} " "$T/setpriv"'
-check "die Kopie gehört nobody und ist nur für nobody lesbar, ihren Ordner listet nur root auf; danach ist beides weg" '[[ $(cat "$T/chown") == "-- nobody:nogroup $SSHKEYS_DIR/lesen."* ]] && awk "NR % 2 == 1 && \$1 != 711 { bad = 1 } NR % 2 == 0 && \$1 != 400 { bad = 1 } END { exit bad || NR < 4 }" "$T/setpriv-rechte" && aufgeraeumt'
+check "nie eingehängt: root kopiert nur die Bytes von LF-SSH, höchstens so viele wie im ISO und eins, mtools liest die Kopie als lf-ssh-leser" '[[ ! -e $T/mount && ! -e $T/umount ]] && grep -qxF -- "-c $((LFSSH_KIB * 1024 + 1)) -- $D/sdz3" "$T/head" && nur_als_leser && grep -qE " -i $SSHKEYS_DIR/lesen\.[A-Za-z0-9]{6}/[A-Za-z0-9]{10} " "$T/setpriv"'
+check "die Kopie gehört root, lesen darf sie nur die Gruppe lf-ssh-leser (0440); ihren Ordner listet nur root auf, betreten darf ihn sonst nur diese Gruppe (0710); danach ist beides weg" '[[ $(wc -l <"$T/chown") == 2 && $(sed -n 1p "$T/chown") == "-- root:lf-ssh-leser $SSHKEYS_DIR/lesen."?????? && $(sed -n 2p "$T/chown") == "-- root:lf-ssh-leser $SSHKEYS_DIR/lesen."??????/?????????? ]] && awk "NR % 2 == 1 && \$1 != 710 { bad = 1 } NR % 2 == 0 && \$1 != 440 { bad = 1 } END { exit bad || NR < 4 }" "$T/setpriv-rechte" && aufgeraeumt'
 echo "restrict,pty alt" >"$SSHKEYS_DIR/authorized_keys"
 mkdir -p "$SSHKEYS_DIR/lesen.altalt"
 load
@@ -508,17 +512,106 @@ touch "$STICK/id_rsa"
 load
 check "nur ein privater Schlüssel: keine-datei mit Meldung" '[[ $ST == keine-datei ]] && grep -q "^Auf LF-SSH liegt id_rsa, wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen"'
 rm -f "$STICK/id_rsa"
+echo "Konto zum Lesen von LF-SSH (sshkeys_reader_check, #123):"
+check "build/chroot-setup.sh legt lf-ssh-leser an: Systembenutzer mit eigener Gruppe, ohne Home, ohne Shell" 'grep -qxF "useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin lf-ssh-leser" build/chroot-setup.sh'
+check "SSHKEYS_READER und SSHKEYS_READER_GROUP nennen ihn, nobody und nogroup kommen in sshkeys.sh nicht mehr vor" '[[ $SSHKEYS_READER == lf-ssh-leser && $SSHKEYS_READER_GROUP == lf-ssh-leser ]] && ! grep -qwE "nobody|nogroup" rescue/lib/sshkeys.sh'
+# konto WURZEL   passwd, group und shadow unter WURZEL/etc, wie nach build/chroot-setup.sh.
+konto() {
+	mkdir -p "$1/etc"
+	printf '%s\n' root:x:0:0:root:/root:/bin/bash nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin \
+		lf-claude:x:998:998::/var/lib/lf-claude:/bin/bash lf-ssh-leser:x:997:997::/nonexistent:/usr/sbin/nologin >"$1/etc/passwd"
+	printf '%s\n' root:x:0: render:x:992:lf-claude nogroup:x:65534: lf-claude:x:998: lf-ssh-leser:x:997: >"$1/etc/group"
+	printf '%s\n' 'root:*:20415:0:99999:7:::' 'nobody:*:20415:0:99999:7:::' 'lf-claude:!:20415::::::' 'lf-ssh-leser:!:20415::::::' >"$1/etc/shadow"
+}
+KG=$T/konto/gut
+konto "$KG"
+OUT=$(sshkeys_reader_check "$KG")
+RC=$?
+check "wie nach chroot-setup.sh: ok, ohne Meldung" '((RC == 0)) && [[ -z $OUT ]]'
+# fall NAME DATEI SED   sshkeys_reader_check an einer Kopie von $KG, in der SED etc/DATEI ändert.
+fall() {
+	cp -a "$KG" "$T/konto/$1"
+	sed -i "$3" "$T/konto/$1/etc/$2"
+	OUT=$(sshkeys_reader_check "$T/konto/$1")
+	RC=$?
+}
+fall ohne passwd '/^lf-ssh-leser:/d'
+check "ohne lf-ssh-leser: FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser fehlt in $T/konto/ohne/etc/passwd" ]]'
+fall ohne-gruppe group '/^lf-ssh-leser:/d'
+check "ohne seine Gruppe: FAIL" '((RC == 1)) && [[ $OUT == "Gruppe lf-ssh-leser fehlt in $T/konto/ohne-gruppe/etc/group" ]]'
+fall uid0 passwd 's/^lf-ssh-leser:x:997:/lf-ssh-leser:x:0:/'
+check "mit UID 0: FAIL, auch weil root sie hat" '((RC == 1)) && [[ $OUT == *"lf-ssh-leser ist kein Systembenutzer (UID 0)"* && $OUT == *"UID von lf-ssh-leser hat auch: root"* ]]'
+fall uid1000 passwd 's/^lf-ssh-leser:x:997:/lf-ssh-leser:x:1000:/'
+check "mit UID 1000 (kein Systembenutzer): FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser ist kein Systembenutzer (UID 1000)" ]]'
+fall nogroup passwd 's/^lf-ssh-leser:x:997:997:/lf-ssh-leser:x:997:65534:/'
+check "mit nogroup statt seiner Gruppe: FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser hat nicht die Gruppe lf-ssh-leser (GID 65534 statt 997)" ]]'
+fall shell passwd 's|^\(lf-ssh-leser:.*\):/usr/sbin/nologin$|\1:/bin/bash|'
+check "mit Shell: FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser hat eine Shell (/bin/bash)" ]]'
+fall home passwd 's|^lf-ssh-leser:x:997:997::/nonexistent:|lf-ssh-leser:x:997:997::/var/lib/lf-ssh-leser:|'
+check "mit Home: FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser hat ein Home (/var/lib/lf-ssh-leser)" ]]'
+fall nonexistent passwd ''
+mkdir "$T/konto/nonexistent/nonexistent"
+OUT=$(sshkeys_reader_check "$T/konto/nonexistent")
+RC=$?
+check "gibt es /nonexistent: FAIL" '((RC == 1)) && [[ $OUT == "$T/konto/nonexistent/nonexistent gibt es" ]]'
+fall uid-geteilt passwd '$a andere:x:997:100::/home/andere:/bin/bash'
+check "ein anderer Benutzer mit seiner UID: FAIL" '((RC == 1)) && [[ $OUT == "UID von lf-ssh-leser hat auch: andere" ]]'
+fall gid-geteilt passwd '$a andere:x:1001:997::/home/andere:/bin/bash'
+check "ein anderer Benutzer mit seiner Gruppe: FAIL" '((RC == 1)) && [[ $OUT == "Gruppe lf-ssh-leser haben auch: andere" ]]'
+fall gid-gruppe group '$a andere:x:997:'
+check "eine andere Gruppe mit seiner GID: FAIL" '((RC == 1)) && [[ $OUT == "GID von lf-ssh-leser hat auch die Gruppe: andere" ]]'
+fall mitglied group 's/^lf-ssh-leser:x:997:$/lf-ssh-leser:x:997:rescue/'
+check "seine Gruppe hat ein Mitglied: FAIL" '((RC == 1)) && [[ $OUT == "Mitglieder in lf-ssh-leser: rescue" ]]'
+fall weitere group 's/^render:x:992:lf-claude$/render:x:992:lf-claude,lf-ssh-leser/'
+check "er ist in einer weiteren Gruppe: FAIL" '((RC == 1)) && [[ $OUT == "lf-ssh-leser ist auch in: render" ]]'
+fall offen shadow 's/^lf-ssh-leser:!:/lf-ssh-leser:kein-echtes-passwort:/'
+check "Passwort nicht gesperrt: FAIL" '((RC == 1)) && [[ $OUT == "Passwort von lf-ssh-leser nicht gesperrt ($T/konto/offen/etc/shadow)" ]]'
+fall leer shadow 's/^lf-ssh-leser:!:/lf-ssh-leser::/'
+check "leeres Passwort: FAIL" '((RC == 1)) && [[ $OUT == "Passwort von lf-ssh-leser nicht gesperrt ($T/konto/leer/etc/shadow)" ]]'
+fall ohne-shadow shadow '/^lf-ssh-leser:/d'
+check "ohne Eintrag in shadow: FAIL" '((RC == 1)) && [[ $OUT == "Passwort von lf-ssh-leser nicht gefunden ($T/konto/ohne-shadow/etc/shadow)" ]]'
+
 echo "Lesen von LF-SSH im Selbsttest (selftest_lfssh):"
 eval "$(sed -n '/^selftest_lfssh() {$/,/^}$/p' rescue/lf)"
-rm -f "$T/setpriv"
-NUR_NOBODY=1
-out=$(selftest_lfssh "$T/st-lf-ssh" 2>&1)
-rc=$?
-check "liest die versteckte Probe als nobody, aber nicht, was nur root lesen darf; danach ist nichts mehr da" '((rc == 0)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest als nobody, auch versteckte Dateien, aber nicht, was nur root lesen darf" && ! -e $T/st-lf-ssh ]] && nur_als_leser && grep -q " -i $T/st-lf-ssh/nur-root.img ::/$" "$T/setpriv"'
-NUR_NOBODY=0
-out=$(selftest_lfssh "$T/st-lf-ssh" 2>&1)
-rc=$?
-check "…und schlägt fehl, wenn mtools liest, was nur root lesen darf" '((rc == 1)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest auch, was nur root lesen darf." && ! -e $T/st-lf-ssh ]]'
+# Der Selbsttest prüft das Konto unter /. Hier prüft sshkeys_reader_check stattdessen KONTO und
+# schreibt mit, wofür es gerufen wurde.
+eval "echt_$(declare -f sshkeys_reader_check)"
+sshkeys_reader_check() { printf '%s\n' "$*" >>"$T/konto-aufrufe"; echt_sshkeys_reader_check "$KONTO"; }
+# stat nennt für -c '%U:%G %a' Benutzer und Gruppe so, wie chown sie zuletzt gesetzt hätte (die
+# Attrappe schreibt nur mit), und die echten Rechte.
+stat() {
+	[[ $1 == -c && $2 == '%U:%G %a' && $3 == -- ]] || {
+		command stat "$@"
+		return
+	}
+	local p o
+	for p in "${@:4}"; do
+		o=$(awk -v p="$p" '$1 == "--" && $3 == p { o = $2 } END { print o }' "$T/chown" 2>/dev/null)
+		printf '%s %s\n' "${o:-$(command stat -c %U:%G -- "$p")}" "$(command stat -c %a -- "$p")"
+	done
+}
+# lfssh   selftest_lfssh mit leeren Mitschriften, Ausgabe in out, Status in rc.
+lfssh() {
+	rm -f "$T/setpriv" "$T/chown" "$T/konto-aufrufe"
+	out=$(selftest_lfssh "$T/st-lf-ssh" 2>&1)
+	rc=$?
+}
+KONTO=$KG NUR_LESER=1
+lfssh
+check "liest die versteckte Probe als lf-ssh-leser aus einer Kopie, die root gehört, aber nicht, was nur root lesen darf; danach ist nichts mehr da" '((rc == 0)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest als lf-ssh-leser aus einer Kopie, die root gehört, auch versteckte Dateien, aber nicht, was nur root lesen darf" && ! -e $T/st-lf-ssh ]] && nur_als_leser && grep -q " -i $T/st-lf-ssh/nur-root.img ::/$" "$T/setpriv"'
+check "…prüft vorher das Konto unter /" '[[ $(cat "$T/konto-aufrufe") == / ]]'
+NUR_LESER=0
+lfssh
+check "…schlägt fehl, wenn mtools liest, was nur root lesen darf" '((rc == 1)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest auch, was nur root lesen darf." && ! -e $T/st-lf-ssh ]]'
+NUR_LESER=1 CHOWN_ALS=lf-ssh-leser:lf-ssh-leser
+lfssh
+check "…und wenn die Kopie dem Lesebenutzer gehört statt root" '((rc == 1)) && [[ $out == "LF-SELFTEST: LF-SSH: Die Kopie gehört nicht root, oder nicht nur lf-ssh-leser darf sie lesen." && ! -e $T/st-lf-ssh ]] && [[ ! -e $T/setpriv ]]'
+CHOWN_ALS="" KONTO=$T/konto/shell
+lfssh
+check "…und wenn das Konto nicht stimmt, mit dem Grund, ohne etwas zu lesen" '((rc == 1)) && [[ $out == "LF-SELFTEST: LF-SSH: Lesebenutzer: lf-ssh-leser hat eine Shell (/bin/bash)" && ! -e $T/st-lf-ssh && ! -e $T/setpriv ]]'
+KONTO=$KG
+unset -f stat sshkeys_reader_check
+eval "$(declare -f echt_sshkeys_reader_check | sed '1s/^echt_//')"
 check "der Selbsttest ruft es auf, mtools steht bei seinen Werkzeugen" 'grep -qxF "	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0" rescue/lf && grep -q "^		photorec .* mdir mcopy " rescue/lf'
 unset -f setpriv chown head mount umount
 check "jeder Zustand hat einen Satz für tty1 und den Selbsttest" '( for s in leer keine-datei keine-partition kein-medium mehrdeutig zwei-partitionen kein-fat partition-zu-gross zwei-dateien zu-gross fehler; do [[ -n $(sshkeys_status_text "$s") ]] || exit 1; done ) && [[ $(sshkeys_status_text ok 1) == "1 Schlüssel von LF-SSH geprüft." && $(sshkeys_status_text ok 3) == "3 Schlüssel von LF-SSH geprüft." ]]'
