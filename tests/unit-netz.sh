@@ -9,6 +9,8 @@
 #
 # Dazu (#103): Im Netz lauscht nichts außer SSH, wenn es an ist. rpcbind aus nfs-common ist im
 # Overlay maskiert. selftest_lauscht prüft das in der ISO, hier mit Attrappen für systemctl und ss.
+# Nur „masked“ gilt, und die Ausnahmen für SSH (TCP 22) und die DHCP-Clients (UDP 68 und 546) gelten
+# nur für ihr Protokoll (#109).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -161,11 +163,13 @@ if [[ -z $FN ]]; then
 fi
 eval "$FN"
 
-# Attrappen. ENABLED ist die Antwort von systemctl is-enabled für beide rpcbind-Units, SSH der
-# Exit-Code von systemctl is-active für ssh.service und ssh.socket, SS die Ausgabe von ss -Htuln.
+# Attrappen. ENABLED und ENABLED_SVC sind die Antworten von systemctl is-enabled für rpcbind.socket
+# und rpcbind.service, SSH der Exit-Code von systemctl is-active für ssh.service und ssh.socket, SS
+# die Ausgabe von ss -Htuln.
 systemctl() {
 	case $* in
-	"is-enabled rpcbind.socket" | "is-enabled rpcbind.service") echo "$ENABLED"; [[ $ENABLED == enabled ]] ;;
+	"is-enabled rpcbind.socket") echo "$ENABLED"; [[ $ENABLED == enabled ]] ;;
+	"is-enabled rpcbind.service") echo "$ENABLED_SVC"; [[ $ENABLED_SVC == enabled ]] ;;
 	"is-active --quiet ssh.service ssh.socket") return "$SSH" ;;
 	*) echo "systemctl $*" >>"$T/unerwartet"; return 9 ;;
 	esac
@@ -193,15 +197,32 @@ lrun() {
 	OUT=$(selftest_lauscht)
 	RC=$?
 }
-lreset() { ENABLED=masked SSH=3 SS_RC=0 SS=$LOOP; }
+lreset() { ENABLED=masked ENABLED_SVC=masked SSH=3 SS_RC=0 SS=$LOOP; }
 
 echo "selftest_lauscht mit Attrappen:"
 lreset
-ENABLED=enabled
+ENABLED=enabled ENABLED_SVC=enabled
 SS="$LOOP
 $RPCBIND"
 lrun
 check "wie bisher (rpcbind eingeschaltet): FAIL, nennt die Unit" '[[ $RC == 1 && $OUT == *"rpcbind.socket ist nicht maskiert (enabled)"* ]]'
+
+# Nur „masked“ gilt (#109): Eine Unit, die nur „disabled“ ist, startet trotzdem, wenn eine andere
+# sie braucht.
+lreset
+ENABLED=disabled ENABLED_SVC=disabled
+lrun
+check '„disabled“ statt „masked“: FAIL, nennt die Unit' '[[ $RC == 1 && $OUT == *"rpcbind.socket ist nicht maskiert (disabled)"* ]]'
+
+lreset
+ENABLED_SVC=disabled
+lrun
+check 'rpcbind.socket maskiert, rpcbind.service nur „disabled“: FAIL, nennt rpcbind.service' '[[ $RC == 1 && $OUT == *"rpcbind.service ist nicht maskiert (disabled)"* ]]'
+
+lreset
+ENABLED=
+lrun
+check 'gibt systemctl keinen Zustand aus: FAIL, „unbekannt“' '[[ $RC == 1 && $OUT == *"rpcbind.socket ist nicht maskiert (unbekannt)"* ]]'
 
 lreset
 lrun
@@ -226,11 +247,29 @@ $SSHD"
 lrun
 check "Port 22 offen, obwohl SSH aus ist: FAIL" '[[ $RC == 1 && $OUT == *"0.0.0.0:22 (tcp)"* ]]'
 
+# Die Ausnahmen gelten nur für ihr Protokoll (#109): SSH für TCP 22, die DHCP-Clients für UDP 68
+# und 546.
+lreset
+SSH=0
+SS="$LOOP
+$SSHD
+udp   UNCONN 0      0            0.0.0.0:22         0.0.0.0:*"
+lrun
+check "SSH eingeschaltet, dazu UDP auf 22: FAIL, nennt nur diesen Socket" '[[ $RC == 1 && $OUT == *"0.0.0.0:22 (udp)"* && $OUT != *"(tcp)"* ]]'
+
 lreset
 SS="$LOOP
 $DHCP"
 lrun
 check "DHCP-Clients (UDP 68, 546 an der Karte): ok" '[[ $RC == 0 ]]'
+
+lreset
+SS="$LOOP
+$DHCP
+tcp   LISTEN 0      4096         0.0.0.0:68         0.0.0.0:*
+tcp   LISTEN 0      4096            [::]:546           [::]:*"
+lrun
+check "TCP auf 68 und 546 ist kein DHCP-Client: FAIL mit beiden, ohne die UDP-Sockets der Clients" '[[ $RC == 1 && $OUT == *"0.0.0.0:68 (tcp)"* && $OUT == *"[::]:546 (tcp)"* && $OUT != *"(udp)"* ]]'
 
 lreset
 SS="$LOOP
