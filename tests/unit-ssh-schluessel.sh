@@ -10,7 +10,8 @@
 #   kein Passwort, ohne kein Schlüssel.
 # - Hostschlüssel mit verschlüsseltem Speicher und die Markierung nach einer Freigabe (lf-freigabe).
 # - Protokoll der Anmeldungen, Hinweis im Hauptmenü, lf.conf, Dienst beim Start.
-# - sshd -T mit lf.conf (selftest_ssh), übersprungen ohne sshd.
+# - sshd -T mit lf.conf (selftest_ssh), übersprungen ohne sshd. Das Lesen von LF-SSH im Selbsttest
+#   (selftest_lfssh) mit denselben Attrappen wie oben.
 #
 # Alle Schlüssel entstehen beim Lauf mit ssh-keygen in einem eigenen Ordner, keiner liegt im Repo.
 # sudo, setpriv, chown, lsblk, blkid, systemctl, loginctl, journalctl und die Dialoge sind
@@ -297,9 +298,10 @@ fat() {
 RD="--reuid=nobody --regid=nogroup --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all --reset-env -- timeout -s KILL 20"
 # setpriv schreibt die Argumente mit, dazu die Rechte des Abbilds (nach -i) und seines Ordners, und
 # führt dann den Befehl nach -- als der Benutzer dieses Tests aus, ohne die Umgebung (wie
-# --reset-env). Ist MCOPY_RC nicht 0, endet mcopy danach mit diesem Status. chown schreibt nur mit,
-# head auch die Argumente, bevor es liest.
-MCOPY_RC=0
+# --reset-env). Ist MCOPY_RC nicht 0, endet mcopy danach mit diesem Status. Mit NUR_NOBODY=1 liest
+# es wie nobody nach chown nur ein Abbild mit 0400. chown schreibt nur mit, head auch die Argumente,
+# bevor es liest.
+MCOPY_RC=0 NUR_NOBODY=0
 setpriv() {
 	local a img="" prev=""
 	printf '%s\n' "$*" >>"$T/setpriv"
@@ -308,6 +310,7 @@ setpriv() {
 		prev=$a
 	done
 	[[ -z $img ]] || stat -c '%a %n' -- "${img%/*}" "$img" >>"$T/setpriv-rechte"
+	if ((NUR_NOBODY)) && [[ -n $img && $(stat -c %a -- "$img") != 400 ]]; then return 1; fi
 	while (($#)) && [[ $1 != -- ]]; do shift; done
 	shift
 	env -i PATH="$PATH" HOME=/nonexistent "$@" || return
@@ -505,6 +508,18 @@ touch "$STICK/id_rsa"
 load
 check "nur ein privater Schlüssel: keine-datei mit Meldung" '[[ $ST == keine-datei ]] && grep -q "^Auf LF-SSH liegt id_rsa, wohl ein privater Schlüssel" "$SSHKEYS_DIR/meldungen"'
 rm -f "$STICK/id_rsa"
+echo "Lesen von LF-SSH im Selbsttest (selftest_lfssh):"
+eval "$(sed -n '/^selftest_lfssh() {$/,/^}$/p' rescue/lf)"
+rm -f "$T/setpriv"
+NUR_NOBODY=1
+out=$(selftest_lfssh "$T/st-lf-ssh" 2>&1)
+rc=$?
+check "liest die versteckte Probe als nobody, aber nicht, was nur root lesen darf; danach ist nichts mehr da" '((rc == 0)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest als nobody, auch versteckte Dateien, aber nicht, was nur root lesen darf" && ! -e $T/st-lf-ssh ]] && nur_als_leser && grep -q " -i $T/st-lf-ssh/nur-root.img ::/$" "$T/setpriv"'
+NUR_NOBODY=0
+out=$(selftest_lfssh "$T/st-lf-ssh" 2>&1)
+rc=$?
+check "…und schlägt fehl, wenn mtools liest, was nur root lesen darf" '((rc == 1)) && [[ $out == "LF-SELFTEST: LF-SSH: mtools liest auch, was nur root lesen darf." && ! -e $T/st-lf-ssh ]]'
+check "der Selbsttest ruft es auf, mtools steht bei seinen Werkzeugen" 'grep -qxF "	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0" rescue/lf && grep -q "^		photorec .* mdir mcopy " rescue/lf'
 unset -f setpriv chown head mount umount
 check "jeder Zustand hat einen Satz für tty1 und den Selbsttest" '( for s in leer keine-datei keine-partition kein-medium mehrdeutig zwei-partitionen kein-fat partition-zu-gross zwei-dateien zu-gross fehler; do [[ -n $(sshkeys_status_text "$s") ]] || exit 1; done ) && [[ $(sshkeys_status_text ok 1) == "1 Schlüssel von LF-SSH geprüft." && $(sshkeys_status_text ok 3) == "3 Schlüssel von LF-SSH geprüft." ]]'
 check "zu große Partition: ein eigener Satz mit der Größe im ISO" '[[ $(sshkeys_status_text partition-zu-gross) == "Die Partition LF-SSH ist größer als im ISO ($((LFSSH_KIB / 1024)) MiB). Sie gilt nicht. Den Stick neu beschreiben, siehe Anleitung." ]]'
