@@ -294,11 +294,15 @@ boot_files() {
 # 5. SquashFS
 # ---------------------------------------------------------------------------
 # start_ids_pruefen ROOT   Status 0, wenn das System unter ROOT keine Kennung aus dem Build trägt, die
-#   bei jedem Start neu entstehen soll (#144, #148): /etc/machine-id ist leer, /var/lib/dbus/machine-id
+#   bei jedem Start neu entstehen soll (#144, #148): /etc/machine-id gibt es, und sie ist leer, /var/lib/dbus/machine-id
 #   ein Link darauf, /etc/nvme/hostnqn und /etc/nvme/hostid fehlen. Nennt sonst je Fund eine Zeile.
 start_ids_pruefen() {
 	local r=$1 bad=0 f
-	if [[ -s $r/etc/machine-id ]]; then
+	# Eine leere Datei, keine fehlende: Ohne die Datei nähme systemd den Start als ersten Start.
+	if [[ ! -f $r/etc/machine-id ]]; then
+		echo "/etc/machine-id fehlt"
+		bad=1
+	elif [[ -s $r/etc/machine-id ]]; then
 		echo "/etc/machine-id ist nicht leer"
 		bad=1
 	fi
