@@ -216,3 +216,7 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /var/log/*.log /var/log/apt/* /root/.cache
 rm -f /usr/sbin/policy-rc.d
 : >/etc/machine-id
+# D-Bus nennt dieselbe Maschinen-ID wie systemd, die bei jedem Start neu entsteht. Als eigene Datei
+# aus dem Build hätten alle Starts derselben ISO dieselbe D-Bus-ID, und sie stünde im öffentlichen
+# ISO (#144). selftest_machine_id prüft es beim Start.
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
