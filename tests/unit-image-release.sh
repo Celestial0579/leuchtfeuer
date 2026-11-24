@@ -374,6 +374,14 @@ check "gelöscht und neu angelegt: zählt weiter als offen" 'suche "$T/frei" "$T
 kill "$LESER" 2>/dev/null
 wait "$LESER" 2>/dev/null
 check "ist sie wieder zu: Rückgabe 3, keines offen" 'suche "$T/frei" "$T/gelesen"; [[ $? == 3 ]]'
+# Ein Gerät, dessen Name mit dem gesuchten anfängt, etwa /dev/loop10 und /dev/loop1 (#95).
+: >"$T/loop1" && : >"$T/loop10" && rm -f "$T/bereit"
+(exec 3<"$T/loop10" && : >"$T/bereit" && exec sleep 300) >/dev/null 2>&1 &
+ZEHN=$!
+for i in $(seq 50); do [[ -e $T/bereit ]] && break; command sleep 0.1; done
+check "offen ist nur loop10: loop1 ist frei (Rückgabe 3), loop10 offen (Rückgabe 0)" 'suche "$T/loop1"; [[ $? == 3 ]] && suche "$T/loop10"'
+kill "$ZEHN" 2>/dev/null
+wait "$ZEHN" 2>/dev/null
 # Ein find, das nichts ausgibt: Dann sah die Suche gar nichts, auch nicht sich selbst.
 mkdir -p "$T/stumm" && printf '#!/bin/sh\nexit 1\n' >"$T/stumm/find" && chmod +x "$T/stumm/find"
 check "sieht die Suche gar nichts: Rückgabe 2, nicht 3" 'PATH="$T/stumm:$PATH" suche "$T/frei" "$T/gelesen"; [[ $? == 2 ]]'

@@ -90,21 +90,36 @@ target_ok() {
 
 # disk_written DISK   Hat ein Prozess DISK, eine ihrer Partitionen oder ein Gerät darauf zum
 #   Schreiben offen (etwa dd oder partclone eines laufenden Klons)?
+#   Verglichen wird, worauf die Verknüpfungen in /proc/*/fd zeigen (find -printf %l), nie die Datei
+#   dahinter: stat auf eine Datei in einem FUSE-Dateisystem, das nicht mehr antwortet, etwa ntfs-3g
+#   auf einer sterbenden Quelle, käme nicht zurück (#95, wie dev_open in recover.sh). Die
+#   Verknüpfung nennt den Kernelnamen, bei einem dm-Gerät /dev/dm-0 statt /dev/mapper/…, darum
+#   KNAME. Hat udev einen Geräteknoten neu angelegt, endet sie auf " (deleted)", das Gerät zählt
+#   trotzdem. Bleibt die Suche dennoch hängen, beendet timeout sie nach 10 s. Ob zum Schreiben,
+#   sagen die Flags in /proc/PID/fdinfo/FD.
+#   Rückgabe 0: zum Schreiben offen, 1: nicht, 2: lässt sich nicht prüfen.
 disk_written() {
 	local -a nodes
-	local f n pid fd flags
-	mapfile -t nodes < <(lsblk -lnpo NAME "$1" 2>/dev/null)
+	local l rc p t n pid fd flags
+	mapfile -t nodes < <(lsblk -lnpo KNAME "$1" 2>/dev/null)
 	((${#nodes[@]})) || return 1
-	for f in /proc/[0-9]*/fd/*; do
+	# Endet ein Prozess, während find liest, endet find mit 1. Leer ist die Liste nie: find sieht sich selbst.
+	l=$(timeout -s KILL 10 find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -printf '%p %l\n' 2>/dev/null)
+	rc=$?
+	((rc <= 1)) && [[ -n $l ]] || return 2
+	while IFS= read -r p; do
+		t=${p#* }
+		t=${t% (deleted)}
+		p=${p%% *}
 		for n in "${nodes[@]}"; do
-			[[ $f -ef $n ]] || continue
-			pid=${f#/proc/}
+			[[ $t == "$n" ]] || continue
+			pid=${p#/proc/}
 			pid=${pid%%/*}
-			fd=${f##*/}
+			fd=${p##*/}
 			flags=$(awk '$1 == "flags:" {print $2}' "/proc/$pid/fdinfo/$fd" 2>/dev/null)
 			[[ $flags =~ ^[0-7]+$ ]] && (((8#$flags & 3) != 0)) && return 0
 		done
-	done
+	done <<<"$l"
 	return 1
 }
 
@@ -130,7 +145,7 @@ disk_mounted_rw() {
 #   kein Prozess die Ziel-Disk offen. Offene Schreibzugriffe und schreibbar eingehängte
 #   Dateisysteme fangen ab, was nicht in der Liste steht.
 source_ok() {
-	local d bd td j
+	local d bd td j w=0
 	d=$(disk_of "$1")
 	bd=$(boot_disk 2>/dev/null || true)
 	td=$(target_disk)
@@ -140,7 +155,9 @@ source_ok() {
 	while IFS= read -r j; do
 		[[ $(disk_of "$j") == "$d" ]] && fail "$1 ist Ziel eines laufenden Jobs (Klon), keine Quelle."
 	done < <(job_disks)
-	disk_written "$d" && fail "$1 wird gerade beschrieben (laufender Klon oder anderer Job), keine Quelle."
+	disk_written "$d" || w=$?
+	((w == 0)) && fail "$1 wird gerade beschrieben (laufender Klon oder anderer Job), keine Quelle."
+	((w == 2)) && fail "Ob $1 gerade beschrieben wird, lässt sich nicht prüfen: Die offenen Dateien in /proc ließen sich nicht lesen. Keine Quelle."
 	disk_mounted_rw "$d" && fail "$1 ist schreibbar eingehängt, keine Quelle."
 	return 0
 }
