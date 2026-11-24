@@ -1555,6 +1555,17 @@ selftest_claude_freigabe() {
 		echo "LF-SELFTEST: Freigabe: Freischalten wirkt nicht ($(lf-freigabe status))"
 		good=0
 	fi
+	# Das Menü läuft als rescue und zeigt die Freigabe nur, wenn es ihre Regel sieht
+	# (claude_freigabe_zustand). Dazu muss /etc/sudoers.d für rescue durchsuchbar sein (#128).
+	# Fehlt die Regel ganz, hat schon die Prüfung davor angeschlagen.
+	if [[ -e /etc/sudoers.d/lf-claude-freigabe ]]; then
+		if sudo -u rescue -H -n test -e /etc/sudoers.d/lf-claude-freigabe </dev/null; then
+			echo "LF-SELFTEST: Freigabe: das Menü (rescue) sieht die Regel der Freigabe"
+		else
+			echo "LF-SELFTEST: Freigabe: das Menü (rescue) sieht die Regel der Freigabe nicht (/etc/sudoers.d: $(stat -c '%U:%G %a' /etc/sudoers.d 2>&1))"
+			good=0
+		fi
+	fi
 	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst. Danach sagt status bis zum
 	# Neustart "Neustart nötig", die Grundregel ist gesperrt, und "an" lehnt ab (GHSA-874q-q3v7-m56v).
 	systemctl start lf-claude-freigabe-ende.service
