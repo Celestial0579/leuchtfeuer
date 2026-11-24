@@ -38,6 +38,11 @@ CLAUDE_FREIGABE_WARTE=5
 # es dabei bis zum Neustart, gleich, was lf-freigabe und /proc später zeigen (GHSA-874q-q3v7-m56v).
 # Nie aus der Umgebung.
 CLAUDE_FREIGABE_GESEHEN=0
+# Die Regel, die lf-claude nur HTTPS im Internet und DNS lässt (GHSA-w376-95wf-5v9q), und der Dienst,
+# der sie beim Start lädt. Claude startet nur, wenn genau sie geladen ist (claude_netz_regel). Nie aus
+# der Umgebung, Tests setzen sie nach dem Laden.
+CLAUDE_NETZ_REGEL=/usr/local/lib/lf/lf-claude-netz.nft
+CLAUDE_NETZ_DIENST=lf-claude-netz-sperre.service
 # Der Zustand aus dem letzten Aufruf von claude_freigabe_zustand in diesem Prozess.
 CLAUDE_FREIGABE_STAND=
 
@@ -143,6 +148,24 @@ claude_startbar() {
 	aus | "an bis "* | "an, ohne Ablauf") return 0 ;;
 	esac
 	return 1
+}
+
+# claude_netz_regel   Ist die Regel aus $CLAUDE_NETZ_REGEL geladen, und zwar genau sie
+#   (GHSA-w376-95wf-5v9q)? Ohne sie erreichte Claude jeden Rechner im Netz und über einen Umweg
+#   auch sshd auf diesem Rechner. Der Dienst muss aktiv sein, und die Tabelle inet lf_claude_netz
+#   muss genau so dastehen, wie dieselbe Datei sie in einem leeren Netz-Namespace anlegt
+#   (nft -s: ohne Zählerstände). Braucht sudo, wie der Rest des Assistenten.
+claude_netz_regel() {
+	local soll ist
+	systemctl is-active --quiet "$CLAUDE_NETZ_DIENST" || return 1
+	soll=$(sudo unshare --net -- sh -c 'nft -f "$1" && nft -s list table inet lf_claude_netz' _ "$CLAUDE_NETZ_REGEL" 2>/dev/null) || return 1
+	ist=$(sudo nft -s list table inet lf_claude_netz 2>/dev/null) || return 1
+	[[ -n $soll && $ist == "$soll" ]]
+}
+
+# claude_netz_text   Der Text, mit dem der Assistent sagt, dass Claude ohne die Regel nicht startet.
+claude_netz_text() {
+	echo "Die Regel, die Claude im Netz auf HTTPS ins Internet und die Namensauflösung beschränkt, ist nicht geladen. Claude startet ohne sie nicht.\n\nDetails: journalctl -u $CLAUDE_NETZ_DIENST\nPrüfen: sudo nft list table inet lf_claude_netz"
 }
 
 # claude_gesperrt_text ZUSTAND   Der Text, mit dem der Assistent sagt, dass Claude bis zum Neustart
@@ -402,6 +425,11 @@ claude_start() {
 		ui_msg "Claude" "$(claude_gesperrt_text "$CLAUDE_FREIGABE_STAND")"
 		return 0
 	fi
+	# Ohne die Regel für das Netz startet Claude nicht (GHSA-w376-95wf-5v9q).
+	if ! claude_netz_regel; then
+		ui_msg "Claude" "$(claude_netz_text)"
+		return 0
+	fi
 	if ! is_online; then
 		ui_msg "Claude" "Keine Internetverbindung.\n\nWerkzeuge > Netzwerk (nmtui) zum Verbinden, LAN-Kabel geht meist automatisch."
 		return 0
@@ -436,6 +464,10 @@ claude_desktop() {
 	# Wie claude_start: nach einer Freigabe erst nach einem Neustart.
 	if ! claude_startbar; then
 		ui_msg "Claude Desktop" "$(claude_gesperrt_text "$CLAUDE_FREIGABE_STAND")"
+		return 0
+	fi
+	if ! claude_netz_regel; then
+		ui_msg "Claude Desktop" "$(claude_netz_text)"
 		return 0
 	fi
 	if ! is_online; then

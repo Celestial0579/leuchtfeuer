@@ -201,6 +201,9 @@ systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # ssh.service und ssh.socket starten nur mit der Regel, die lf-claude den Weg zu sshd auf diesem
 # Rechner sperrt (GHSA-cmcp-h343-c4gj). Nach dem disable, damit es die Verweise nicht entfernt.
 systemctl enable lf-claude-ssh-sperre.service
+# lf-claude erreicht nur HTTPS im Internet und DNS, keinen Dienst auf diesem Rechner und keinen
+# Rechner im lokalen Netz (GHSA-w376-95wf-5v9q). Claude startet nur mit dieser Regel.
+systemctl enable lf-claude-netz-sperre.service
 # systemd-ssh-generator bindet sshd sonst bei jedem Start an den AF_UNIX-Socket
 # /run/ssh-unix-local/socket (Modus 0666) und in einer VM mit /dev/vsock an vsock-Port 22, beides
 # unabhängig vom Menü und an der Regel vorbei, die nur TCP sieht (GHSA-cmcp-h343-c4gj).

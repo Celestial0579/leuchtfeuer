@@ -59,6 +59,7 @@ Diese Schutzregeln gelten immer:
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 - Kein Programm kann sich per ptrace an ein anderes hängen, auch root nicht: ptrace ist ab dem Start gesperrt (`kernel.yama.ptrace_scope=3`).
 - Kein Kernel lässt sich per kexec laden, auch nicht von root: kexec ist ab dem Start gesperrt (`kernel.kexec_load_disabled=1`).
+- Im Netz erreicht Claude nur HTTPS im Internet und die Namensauflösung, keinen Dienst auf diesem Rechner und keinen Rechner im lokalen Netz. Ohne diese Regel startet Claude nicht.
 - Nach einer Claude-Freigabe bleibt Claude bis zum Neustart gesperrt, und eine neue Freigabe gibt es erst danach. Sicher endet root-Zugriff nur mit dem Ausschalten am Netzschalter.
 
 Was ist drin

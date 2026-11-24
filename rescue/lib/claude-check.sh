@@ -10,6 +10,11 @@
 # Sekunden je Lauf der CLI
 CLAUDE_CHECK_TIMEOUT=${CLAUDE_CHECK_TIMEOUT:-180}
 
+# Adresse der Attrappe: eine eigene auf loopback, nicht 127.0.0.1. Auf diesem Rechner darf lf-claude
+# nur dorthin verbinden, und nur zu einem Socket, der genau an sie gebunden ist (lf-claude-netz.nft,
+# GHSA-w376-95wf-5v9q). Nie aus der Umgebung.
+CLAUDE_CHECK_ADDR=127.76.70.1
+
 # claude_check_run CLI VERZEICHNIS NAME BEFEHL [ARBEITSVERZEICHNIS [ARGUMENTE …]]
 #   Ein Lauf der CLI, in dem die Attrappe den Shell-Befehl verlangt. Mitschnitt: NAME.json,
 #   die erste Anfrage im Wortlaut (alles, was das Modell zu lesen bekäme): NAME.anfrage.
@@ -19,7 +24,7 @@ claude_check_run() {
 	local -a extra=("${@:6}")
 	jq -cn --arg c "$4" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
 	rm -f "$dir/$name.port" "$dir/$name.json" "$dir/$name.anfrage"
-	python3 -I "$LF_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
+	LF_API_ADDR=$CLAUDE_CHECK_ADDR python3 -I "$LF_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
 	srv=$!
 	for ((i = 0; i < 100; i++)); do
 		[[ -s $dir/$name.port ]] && break
@@ -28,7 +33,7 @@ claude_check_run() {
 	port=$(cat "$dir/$name.port" 2>/dev/null)
 	if [[ $port =~ ^[0-9]+$ ]]; then
 		(cd "$cwd" && env -i HOME="$dir/home" PATH="$PATH" TERM=dumb LANG=C.UTF-8 \
-			CLAUDE_CONFIG_DIR="$dir/home/.claude" ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
+			CLAUDE_CONFIG_DIR="$dir/home/.claude" ANTHROPIC_BASE_URL="http://$CLAUDE_CHECK_ADDR:$port" \
 			ANTHROPIC_API_KEY="selbsttest-kein-schluessel" DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
 			DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 			timeout "$CLAUDE_CHECK_TIMEOUT" "$cli" -p "Selbsttest: Die Attrappe gibt den Werkzeugaufruf vor." \

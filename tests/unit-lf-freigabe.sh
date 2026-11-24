@@ -3126,6 +3126,8 @@ assistent() {
 		# shellcheck disable=SC1091
 		. rescue/lib/claude.sh
 		CLAUDE_FREIGABE_MERKER=$T/merker CLAUDE_FREIGABE_PROC=$T/fproc CLAUDE_FREIGABE_REGEL=$T/regel
+		# Die Regel für das Netz von Claude gilt hier als geladen, das prüft unit-netz-claude.sh.
+		claude_netz_regel() { return 0; }
 		claude_context() { echo kontext >>"$T/assistent"; }
 		claude_wayland_dir() { return 0; }
 		claude_scope() {

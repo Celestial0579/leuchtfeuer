@@ -7,7 +7,9 @@ sie mit genau einem Werkzeugaufruf (aus der Datei AUFRUF, zum Beispiel Bash mit 
 "blockdev --setrw /dev/loop7"), auf jede weitere mit dem Wort FERTIG. Ob der Aufruf läuft,
 entscheidet dann Claude Code mit seinen Einstellungen, nicht das Modell.
 
-Die Attrappe lauscht nur auf 127.0.0.1 und nur, solange der Selbsttest läuft.
+Die Attrappe lauscht nur auf 127.76.70.1 und nur, solange der Selbsttest läuft. Nur dorthin darf
+lf-claude auf diesem Rechner verbinden (lf-claude-netz.nft, GHSA-w376-95wf-5v9q), und nur zu einem
+Socket, der genau an diese Adresse gebunden ist. claude-check.sh nennt sie in LF_API_ADDR.
 
 Aufruf: selftest-claude-api.py PORTDATEI AUFRUF PROTOKOLL [ANFRAGE]
     PORTDATEI   Hierhin schreibt die Attrappe den Port, den sie bekommen hat.
@@ -132,7 +134,12 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
 
-server = HTTPServer(("127.0.0.1", 0), Handler)
+# Nur eine Adresse auf loopback, nie 0.0.0.0: Die Regel für lf-claude lässt nur Sockets zu, die
+# genau an 127.76.70.1 gebunden sind.
+ADDR = os.environ.get("LF_API_ADDR") or "127.76.70.1"
+if not ADDR.startswith("127."):
+    sys.exit("selftest-claude-api.py: LF_API_ADDR muss auf loopback liegen (127.x.x.x)")
+server = HTTPServer((ADDR, 0), Handler)
 tmp = PORT_FILE + ".neu"
 with open(tmp, "w", encoding="utf-8") as f:
     f.write("%d\n" % server.server_address[1])
