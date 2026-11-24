@@ -9,10 +9,13 @@
 #   - chroot-setup.sh legt Fassung und sha256 der Claude Code CLI fest, führt kein Skript aus dem
 #     Netz aus und verlangt, dass die installierte CLI die festgelegte Fassung meldet,
 #   - chroot-setup.sh legt für apt nur den Claude-Desktop-Schlüssel mit dem festgelegten
-#     Fingerabdruck ab, nie einen weiteren Schlüssel aus dem Download,
+#     Fingerabdruck ab und bricht ab, wenn danach ein anderer oder ein weiterer Hauptschlüssel darin
+#     steht; gpg läuft dort nie im Verzeichnis von root,
 #   - build.sh schreibt Basis-Image und Fassung der CLI ins Manifest des Releases.
 # Mit einer Attrappe für curl: claude_cli_laden lädt die feste Fassung für linux-x64 und lehnt
 # jede Datei mit einem anderen sha256 ab. Echt prüft es der ISO-Build in der CI.
+# Mit einer Attrappe für gpg, ohne Schlüsselmaterial: desktop_schluessel lässt aus einer
+# Schlüsseldatei nur den festgelegten Schlüssel durch und scheitert, wenn das nicht genau einer ist.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -34,8 +37,10 @@ RUN_IMG='"$img" /src/build/build.sh'
 ENV_IMG='-e LF_BASIS_IMAGE="$img"'
 IMG_RE='^ubuntu:26\.04@sha256:[0-9a-f]{64}$ ]]'
 V_CHECK='[[ $cli_v != "$CLAUDE_CLI_VERSION "* ]]'
-EXPORT_PIN='--armor --export "$CLAUDE_DESKTOP_FPR" >"$key"'
+EXPORT_PIN='--armor --export "$CLAUDE_DESKTOP_FPR" >"$2"'
 ALLE_PUB='$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }'
+FPR_CHECK='[[ $fpr == "$CLAUDE_DESKTOP_FPR" ]]'
+RUF_DESKTOP='if ! desktop_schluessel "$roh" "$key"; then'
 
 echo "Basis-Image:"
 check "build/Dockerfile hat genau eine FROM-Zeile" '[[ $(grep -c "^FROM" "$D") == 1 ]]'
@@ -50,9 +55,13 @@ check "Dependabot prüft das Image in /build" 'grep -qE "^[[:space:]]+- package-
 check "Dependabot schlägt keine andere Ubuntu-Fassung vor" 'grep -qE "^[[:space:]]+- dependency-name: ubuntu$" "$B" && grep -qF "\"version-update:semver-major\", \"version-update:semver-minor\"" "$B"'
 
 echo "Claude Desktop:"
-check "für apt nur der Schlüssel mit dem festgelegten Fingerabdruck, aus dem Download exportiert" 'grep -qF -- "$EXPORT_PIN" "$C"'
-check "geprüft werden alle Hauptschlüssel der Datei, nicht nur der erste" 'grep -qF -- "$ALLE_PUB" "$C" && ! grep -qF "{print \$10; exit}" "$C"'
+FN_D=$(sed -n '/^desktop_schluessel() {$/,/^}$/p' "$C")
+check "für apt nur der Schlüssel mit dem festgelegten Fingerabdruck, aus dem Download exportiert" 'grep -qF -- "$EXPORT_PIN" <<<"$FN_D"'
+check "geprüft werden alle Hauptschlüssel der Datei, nicht nur der erste" 'grep -qF -- "$ALLE_PUB" <<<"$FN_D" && ! grep -qF "{print \$10; exit}" "$C"'
+check "der Status der Prüfung ist der Vergleich mit dem festgelegten Fingerabdruck" '[[ $(tail -n 2 <<<"$FN_D" | head -n 1) == $'"'"'\t'"'"'"$FPR_CHECK" ]]'
+check "scheitert sie, bricht der Build ab" 'awk -v r="$RUF_DESKTOP" '"'"'$0 == r { an = 1 } an && $0 == "\texit 1" { ok = 1 } an && $0 == "fi" { an = 0 } END { exit !ok }'"'"' "$C"'
 check "apt nimmt genau diese Datei (signed-by)" 'grep -qF "signed-by=\$key]" "$C" && [[ $(grep -c "^key=" "$C") == 1 ]]'
+check "jeder Aufruf von gpg hat ein eigenes --homedir (kein /root/.gnupg in der ISO)" '! grep -vE "^[[:space:]]*#" "$C" | grep -E "(^|[[:space:]\"(])gpg[[:space:]]" | grep -qv -- "--homedir"'
 
 echo "Claude Code CLI:"
 check "chroot-setup.sh legt die Fassung fest" 'grep -qE "^CLAUDE_CLI_VERSION=\"[0-9]+\.[0-9]+\.[0-9]+\"$" "$C"'
@@ -121,6 +130,109 @@ check "Download scheitert: Status ungleich 0" '((RC != 0))'
 unset CURL_RC
 lade
 check "danach wieder die passende Datei: Status 0" '((RC == 0))'
+
+# gpg-Attrappe ohne Schlüsselmaterial. Eine Schlüsseldatei besteht hier aus Zeilen "haupt FPR" (ein
+# Hauptschlüssel) und "unter FPR" (ein Unterschlüssel des Hauptschlüssels davor). Wie gpg:
+#   --import nimmt alle Schlüssel der Datei in das Verzeichnis hinter --homedir auf, gleiche
+#     Hauptschlüssel zusammengeführt, und scheitert mit Status 2 an einer Datei ohne Schlüssel,
+#   --export FPR gibt jeden Schlüssel samt Unterschlüsseln aus, dessen Haupt- oder Unterschlüssel
+#     den Fingerabdruck FPR hat, sonst nichts, --export ohne FPR alle Schlüssel,
+#   --show-keys --with-colons zeigt je Hauptschlüssel pub und fpr, je Unterschlüssel sub und fpr.
+# Jeder Aufruf steht in $T/gpg.log.
+bloecke() {
+	awk '$1 == "haupt" && NF == 2 { if (b != "") print b; b = $2; next }
+		$1 == "unter" && NF == 2 && b != "" { b = b " " $2 }
+		END { if (b != "") print b; else exit 2 }' "$1"
+}
+gpg() {
+	local home='' art='' b
+	local -a arg=()
+	echo "$*" >>"$T/gpg.log"
+	while (($#)); do
+		case $1 in
+		--homedir)
+			home=${2:-}
+			shift
+			(($#)) && shift
+			;;
+		--import) art="import" && shift ;;
+		--export) art="export" && shift ;;
+		--show-keys) art="show" && shift ;;
+		-*) shift ;;
+		*) arg+=("$1") && shift ;;
+		esac
+	done
+	[[ -n $home && -d $home ]] || return 2
+	local datei=${arg[0]:-} fpr=${arg[0]:-*}
+	case $art in
+	import)
+		b=$(bloecke "$datei") || { echo "gpg: keine gültigen OpenPGP-Daten gefunden." >&2; return 2; }
+		{ cat "$home/bund" 2>/dev/null; printf '%s\n' "$b"; } | awk '
+			!($1 in h) { h[$1] = 1; o[++n] = $1 }
+			{ for (i = 2; i <= NF; i++) if (!(($1, $i) in s)) { s[$1, $i] = 1; u[$1] = u[$1] " " $i } }
+			END { for (i = 1; i <= n; i++) print o[i] u[o[i]] }' >"$home/bund.neu" && mv "$home/bund.neu" "$home/bund"
+		;;
+	export)
+		awk -v f="$fpr" '{ for (i = 1; i <= NF; i++) if (f == "*" || $i == f) { print "haupt " $1; for (j = 2; j <= NF; j++) print "unter " $j; next } }' "$home/bund"
+		;;
+	show)
+		b=$(bloecke "$datei") || return 2
+		awk '{ print "pub:-:4096:1:" substr($1, 25) ":0:::-:::scESC::::::23::0:"; print "fpr:::::::::" $1 ":"
+			for (i = 2; i <= NF; i++) { print "sub:-:4096:1:" substr($i, 25) ":0::::::s::::::23:"; print "fpr:::::::::" $i ":" } }' <<<"$b"
+		;;
+	*) return 2 ;;
+	esac
+}
+
+# datei ZEILE...   die Schlüsseldatei aus dem Download
+datei() { printf '%s\n' "$@" >"$T/roh"; }
+# probe   desktop_schluessel mit $T/roh nach $T/ziel; Status in RC, die Hauptschlüssel in ZIEL in HAUPT
+probe() {
+	rm -f "$T/ziel" "$T/gpg.log"
+	desktop_schluessel "$T/roh" "$T/ziel" 2>>"$T/gpg.err"
+	RC=$?
+	HAUPT=$(awk '$1 == "haupt" { printf "%s ", $2 }' "$T/ziel" 2>/dev/null)
+}
+
+if [[ -z $FN_D ]]; then
+	echo "  FAIL desktop_schluessel fehlt in $C"
+	fails=$((fails + 1))
+else
+	eval "$FN_D"
+	A=$(printf '%040d' 1 | tr 0 A) B=$(printf '%040d' 2 | tr 0 B) X=$(printf '%040d' 3 | tr 0 C)
+	U1=$(printf '%040d' 4 | tr 0 D) U2=$(printf '%040d' 5 | tr 0 E)
+	CLAUDE_DESKTOP_FPR=$A
+	echo "desktop_schluessel mit einer Attrappe für gpg:"
+	datei "haupt $A" "unter $U1" "unter $U2"
+	probe
+	check "der festgelegte Schlüssel allein: Status 0, mit seinen Unterschlüsseln" '((RC == 0)) && [[ $HAUPT == "$A " ]] && [[ $(grep -c "^unter " "$T/ziel") == 2 ]]'
+	check "gpg arbeitet nur im eigenen Verzeichnis, danach ist es weg" 'h=$(sed -n "1s/^--homedir \([^ ]*\) .*/\1/p" "$T/gpg.log"); [[ -n $h && $h != /root/* && ! -e $h ]] && ! grep -qv -- "^--homedir $h " "$T/gpg.log"'
+	datei "haupt $A" "haupt $B"
+	probe
+	check "festgelegter Schlüssel, dahinter ein fremder: Status 0, nur der festgelegte" '((RC == 0)) && [[ $HAUPT == "$A " ]]'
+	datei "haupt $B" "haupt $A"
+	probe
+	check "fremder Schlüssel zuerst, dahinter der festgelegte: Status 0, nur der festgelegte" '((RC == 0)) && [[ $HAUPT == "$A " ]]'
+	datei "haupt $A" "haupt $A"
+	probe
+	check "der festgelegte Schlüssel zweimal: Status 0, ein Hauptschlüssel" '((RC == 0)) && [[ $HAUPT == "$A " ]]'
+	datei "haupt $B"
+	probe
+	check "nur ein fremder Schlüssel: Status ungleich 0" '((RC != 0))'
+	datei "haupt $X" "unter $A"
+	probe
+	check "fremder Hauptschlüssel mit dem festgelegten Fingerabdruck als Unterschlüssel: Status ungleich 0" '((RC != 0))'
+	datei "haupt $A" "haupt $X" "unter $A"
+	probe
+	check "derselbe neben dem festgelegten Schlüssel: Status ungleich 0" '((RC != 0))'
+	printf 'kein Schlüssel\n' >"$T/roh"
+	probe
+	check "eine Datei ohne Schlüssel: Status ungleich 0" '((RC != 0))'
+	: >"$T/roh"
+	probe
+	check "eine leere Datei: Status ungleich 0" '((RC != 0))'
+	unset -f gpg
+fi
 
 echo
 if ((fails)); then
