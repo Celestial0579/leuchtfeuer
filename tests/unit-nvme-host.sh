@@ -78,7 +78,6 @@ rm "$T/root/etc/machine-id"
 pruefe
 check "keine /etc/machine-id (systemd nähme den Start als ersten): gemeldet" '[[ $RC == 1 && $OUT == "/etc/machine-id fehlt" ]]'
 wurzel
-wurzel
 rm "$T/root/var/lib/dbus/machine-id"
 printf '0123456789abcdef0123456789abcdef\n' >"$T/root/var/lib/dbus/machine-id"
 pruefe
