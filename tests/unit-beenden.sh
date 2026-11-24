@@ -138,8 +138,10 @@ start "aus"
 check "keine Freigabe: nichts" '((RC == 1)) && ! grep -q "^sudo\|^sleep" "$T/aufrufe"'
 start "an, ohne Ablauf" "an bis 12:40"
 check "nach dem Warten mit Timer (Freischalten war noch nicht fertig): nichts" '((RC == 1)) && grep -qx "sleep 5" "$T/aufrufe" && ! grep -q "^sudo" "$T/aufrufe"'
-LF_FREIGABE_WARTE=1 start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
-check "die Wartezeit kommt aus LF_FREIGABE_WARTE" '((RC == 0)) && grep -qx "sleep 1" "$T/aufrufe"'
+CLAUDE_FREIGABE_WARTE=1
+start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
+CLAUDE_FREIGABE_WARTE=5
+check "die Wartezeit kommt aus CLAUDE_FREIGABE_WARTE" '((RC == 0)) && grep -qx "sleep 1" "$T/aufrufe"'
 check "sagt lf-freigabe danach aus, auch mit dem Merker 2: Das Menü hat die Freigabe gesehen, der Zustand sagt Neustart nötig (GHSA-874q-q3v7-m56v)" '[[ $OUT == "Neustart nötig: Das Menü kennt eine Freigabe seit dem Start, lf-freigabe meldet trotzdem: aus" ]]'
 echo 1 >"$T/merker"
 start "an, ohne Ablauf" "an, ohne Ablauf" "aus"
