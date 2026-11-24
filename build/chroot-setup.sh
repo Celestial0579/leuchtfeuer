@@ -158,6 +158,11 @@ EOF
 # shellcheck source=rescue/lib/pam.sh
 . /usr/local/lib/lf/pam.sh
 pam_haerten / || { echo "FEHLER: PAM ließ sich nicht wie erwartet einrichten" >&2; exit 1; }
+# setuid, setgid und Capabilities nur, wo Leuchtfeuer sie braucht (#153, siehe rescue/lib/setuid.sh).
+# Wie bei PAM erst nach der letzten Paketinstallation.
+# shellcheck source=rescue/lib/setuid.sh
+. /usr/local/lib/lf/setuid.sh
+setuid_haerten / || { echo "FEHLER: setuid, setgid oder Capabilities ließen sich nicht wie erwartet einrichten" >&2; exit 1; }
 
 log "Locale und Tastatur (Deutsch)"
 sed -i 's/^# *\(de_DE.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen

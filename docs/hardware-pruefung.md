@@ -92,7 +92,7 @@ angeschlossen sind.
 2. **Während Phase 1 den USB-Adapter der Quelle abziehen, wieder anstecken** und „Unterbrochene Rettung fortsetzen“ wählen.
    Erwartet: Es geht an der Stelle weiter, an der der Lauf aufgehört hat. Mit einer anderen Disk statt der Quelle lehnt der Assistent ab.
 3. **Neustart während der Rettung,** dann fortsetzen: wie Schritt 2.
-4. **Ziel exFAT und Ziel NTFS** (eine vorhandene NTFS-Partition mit genug Platz): Die Rettung läuft, und das Image ist danach unter Windows lesbar.
+4. **Ziel exFAT und Ziel NTFS** (eine vorhandene NTFS-Partition mit genug Platz): Die Rettung läuft, und das Image ist danach unter Windows lesbar. Das gilt auch ohne setuid für ntfs-3g (#153).
 
 5 Klonen
 --------
@@ -147,6 +147,7 @@ Nur mit Internet und eigenem Konto.
    - Grafik mit GPU: `ls -l /dev/dri` und in der App flüssiges Scrollen. Ohne GPU-Zugriff (Gruppe `render`) fällt sie auf Software-Darstellung zurück.
    - Auf tty2 als Live-Benutzer: `ls -l /run/lf/wayland` zeigt nur den Socket von cage, Gruppe `lf-claude`.
    - Mit gesperrtem ptrace (#85, `sysctl kernel.yama.ptrace_scope` zeigt 3) läuft die App wie vorher.
+   - Ohne setuid für `fusermount3` (#153): Der Dialog zum Anhängen einer Datei öffnet sich und zeigt die Dateien.
 
 9 Selbsttest auf echter Hardware
 --------------------------------
@@ -155,7 +156,7 @@ Nur mit Internet und eigenem Konto.
 sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
-Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`, `LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)`, `LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)` und `LF-SELFTEST: Freigabe: das Menü (rescue) sieht die Regel der Freigabe`. Die Datei gehört ins Issue. Der Selbsttest schaltet eine Freigabe frei und lässt sie ablaufen: Danach ist Claude bis zum Neustart gesperrt. Den Selbsttest darum gleich nach dem Einschalten starten und danach am Netzschalter ausschalten (gedrückt halten).
+Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: ptrace: gesperrt (kernel.yama.ptrace_scope=3)`, `LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)`, `LF-SELFTEST: Freigabe: Merker im Kernel vor dem Freischalten 2, danach bis zum Neustart 1 (kernel.unprivileged_bpf_disabled)`, `LF-SELFTEST: Freigabe: das Menü (rescue) sieht die Regel der Freigabe` und `LF-SELFTEST: setuid: nur sudo, chrome-sandbox, der Helfer von D-Bus, ssh-agent, cons.saver und ping`. Die Datei gehört ins Issue. Der Selbsttest schaltet eine Freigabe frei und lässt sie ablaufen: Danach ist Claude bis zum Neustart gesperrt. Den Selbsttest darum gleich nach dem Einschalten starten und danach am Netzschalter ausschalten (gedrückt halten).
 
 10 SSH
 ------

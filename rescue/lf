@@ -9,7 +9,7 @@ set -u
 
 LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
 [[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools sshkeys pam; do
+for f in common disks safety casefile target recover clone p2v resize persist claude claude-check setuid tools sshkeys pam; do
 	# shellcheck disable=SC1090
 	. "$LF_LIB/$f.sh"
 done
@@ -85,6 +85,7 @@ selftest() {
 	selftest_kexec || ok=0
 	selftest_machine_id || ok=0
 	selftest_nvme_host || ok=0
+	selftest_setuid || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -791,6 +792,19 @@ selftest_nvme_host() {
 		fi
 	done
 	echo "LF-SELFTEST: NVMe-Host: Host-NQN und Host-ID von diesem Start, keine Verbindung von selbst"
+}
+
+# selftest_setuid [WURZEL]   Nur die Programme aus SETUID_SOLL haben setuid, setgid oder Capabilities
+#   (#153, rescue/lib/setuid.sh). Geprüft werden Modus, Besitzer und Capabilities, ausgeführt wird
+#   keins der Programme.
+selftest_setuid() {
+	local out
+	if out=$(setuid_pruefen "${1:-/}"); then
+		echo "LF-SELFTEST: setuid: nur sudo, chrome-sandbox, der Helfer von D-Bus, ssh-agent, cons.saver und ping"
+		return 0
+	fi
+	sed 's/^/LF-SELFTEST: setuid: /' <<<"$out"
+	return 1
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf

@@ -39,6 +39,9 @@ die() { printf '\033[1;31mFEHLER:\033[0m %s\n' "$*" >&2; exit 1; }
 # pam_pruefen vor dem squashfs (GHSA-j332-2v26-m4qm)
 # shellcheck source=rescue/lib/pam.sh
 . "$SRC/rescue/lib/pam.sh"
+# setuid_pruefen vor dem squashfs (#153)
+# shellcheck source=rescue/lib/setuid.sh
+. "$SRC/rescue/lib/setuid.sh"
 # Partition LF-SSH für eigene SSH-Schlüssel (#99)
 # shellcheck source=build/lf-ssh/partition.sh
 . "$SRC/build/lf-ssh/partition.sh"
@@ -74,7 +77,7 @@ host_deps() {
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends \
 		debootstrap squashfs-tools xorriso mtools cpio dosfstools fdisk \
-		grub-common fonts-dejavu-core tex-gyre python3 ca-certificates curl gnupg >/dev/null
+		grub-common fonts-dejavu-core tex-gyre python3 ca-certificates curl gnupg libcap2-bin >/dev/null
 	# DejaVu Sans Mono liegt in neueren Releases im eigenen Paket
 	apt-get install -y -qq --no-install-recommends fonts-dejavu-mono >/dev/null 2>&1 || true
 	# Was make_iso für die Partition LF-SSH braucht (build/lf-ssh/partition.sh), gleich hier statt
@@ -83,6 +86,8 @@ host_deps() {
 	for c in xorriso mkfs.vfat mcopy mdir sfdisk blkid cmp; do
 		command -v "$c" >/dev/null || die "Build-Werkzeug fehlt: $c"
 	done
+	# getcap für setuid_pruefen vor dem squashfs (rescue/lib/setuid.sh)
+	command -v getcap >/dev/null || die "Build-Werkzeug fehlt: getcap"
 }
 
 # ---------------------------------------------------------------------------
@@ -347,6 +352,13 @@ squash() {
 	local ids
 	if ! ids=$(start_ids_pruefen "$CHROOT"); then
 		echo "FEHLER: Kennungen aus dem Build im chroot: ${ids//$'\n'/; }" >&2
+		exit 1
+	fi
+	# setuid, setgid und Capabilities nur, wo Leuchtfeuer sie braucht (#153), siehe
+	# rescue/lib/setuid.sh und chroot-setup.sh.
+	local suid
+	if ! suid=$(setuid_pruefen "$CHROOT"); then
+		echo "FEHLER: setuid, setgid oder Capabilities im chroot: ${suid//$'\n'/; }" >&2
 		exit 1
 	fi
 	mksquashfs "$CHROOT" "$ISO/casper/filesystem.squashfs" \
