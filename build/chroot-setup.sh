@@ -185,6 +185,10 @@ systemctl mask swap.target >/dev/null 2>&1 || true
 
 log "Dienste"
 systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service lf-passwort-sperre.service lf-ssh-schluessel.service lf-nvme-host.service NetworkManager.service
+# NVMe-oF: Beim Start verbindet sich das Rettungssystem mit keinem Ziel im Netz oder am Fibre Channel
+# (#148). Von Hand geht es weiter (nvme discover, nvme connect). Maskiert ist auch die Vorlage, die
+# udev bei Meldungen von Fibre Channel oder eines Discovery-Controllers startet.
+systemctl mask nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # ssh.service und ssh.socket starten nur mit der Regel, die lf-claude den Weg zu sshd auf diesem

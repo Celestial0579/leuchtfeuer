@@ -6,12 +6,14 @@
 #     Installation von Paketen und schaltet lf-nvme-host.service ein,
 #   - lf-nvme-host.service läuft früh (vor udev und den Diensten von nvme-cli für NVMe-oF) und legt
 #     beide an wie nvme-cli bei der Installation, aber nur, wenn sie fehlen,
+#   - chroot-setup.sh maskiert die Dienste, mit denen sich nvme-cli beim Start selbst verbände,
 #   - build.sh baut kein squashfs, solange start_ids_pruefen etwas findet,
 #   - der Selbsttest ruft selftest_nvme_host auf.
 # Mit Attrappen und Verzeichnissen statt /etc und /rofs:
 #   - start_ids_pruefen findet jede Kennung aus dem Build (#144, #148),
 #   - der Befehl aus lf-nvme-host.service legt fehlende Dateien an und lässt vorhandene stehen,
-#   - selftest_nvme_host: beide vorhanden, im Format von nvme-cli und nicht im Image ist ok.
+#   - selftest_nvme_host: beide vorhanden, im Format von nvme-cli, nicht im Image, und die Dienste
+#     maskiert ist ok.
 # Echt prüft es selftest_nvme_host im Boot-Test.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -28,11 +30,14 @@ check() {
 }
 
 RM='rm -f /etc/nvme/hostnqn /etc/nvme/hostid'
+MASK='systemctl mask nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service'
 RUF='if ! ids=$(start_ids_pruefen "$CHROOT"); then'
 echo "Image:"
 check "chroot-setup.sh entfernt Host-NQN und Host-ID" 'grep -qxF -- "$RM" "$C"'
 check "erst nach der letzten Installation von Paketen" 'r=$(grep -nxF -- "$RM" "$C" | cut -d: -f1); i=$(grep -nE "apt-get install|dpkg -i" "$C" | tail -n 1 | cut -d: -f1); [[ -n $r && -n $i ]] && ((r > i))'
 check "chroot-setup.sh schaltet lf-nvme-host.service ein" 'grep -qE "^systemctl enable .*lf-nvme-host\.service" "$C"'
+check "chroot-setup.sh maskiert die Dienste, mit denen sich nvme-cli beim Start selbst verbände" 'grep -qxF -- "$MASK" "$C"'
+check "die Masken stehen nach der letzten Installation von Paketen" 'm=$(grep -nxF -- "$MASK" "$C" | cut -d: -f1); i=$(grep -nE "apt-get install|dpkg -i" "$C" | tail -n 1 | cut -d: -f1); [[ -n $m && -n $i ]] && ((m > i))'
 check "der Dienst läuft früh, ohne die Standard-Abhängigkeiten" 'grep -qx "DefaultDependencies=no" "$U" && grep -qx "WantedBy=sysinit.target" "$U" && grep -qx "Type=oneshot" "$U"'
 check "vor udev und vor jedem Dienst von nvme-cli, der NVMe-oF verbindet" 'b=" $(sed -n "s/^Before=//p" "$U") "; [[ $b == *" systemd-udev-trigger.service "* && $b == *" nvmefc-boot-connections.service "* && $b == *" nvmf-autoconnect.service "* && $b == *" nvmf-connect-nbft.service "* ]]'
 check "er legt beide an wie nvme-cli, nur wenn sie fehlen" 'e=$(sed -n "s/^ExecStart=//p" "$U"); [[ $e == *"[ -s /etc/nvme/hostnqn ] || /usr/sbin/nvme gen-hostnqn >/etc/nvme/hostnqn;"* && $e == *"[ -s /etc/nvme/hostid ] || /usr/bin/uuidgen >/etc/nvme/hostid;"* ]]'
@@ -131,8 +136,12 @@ check "nur die Host-ID fehlt: nur uuidgen, die Host-NQN bleibt" '((RC == 0)) && 
 # zustand NQN ID [IMAGE]   NQN und ID unter $T/etc-nvme ("-" lässt die Datei weg); IMAGE "frei" (wie
 #   im Build), "nqn" oder "id" (diese Datei steht auch im Image) oder "fehlt" (kein Image)
 zustand() {
-	rm -rf "$T/etc-nvme" "$T/rofs"
-	mkdir -p "$T/etc-nvme"
+	rm -rf "$T/etc-nvme" "$T/rofs" "$T/systemd"
+	mkdir -p "$T/etc-nvme" "$T/systemd"
+	local u
+	for u in nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service; do
+		ln -s /dev/null "$T/systemd/$u"
+	done
 	[[ $1 == - ]] || printf '%s\n' "$1" >"$T/etc-nvme/hostnqn"
 	[[ $2 == - ]] || printf '%s\n' "$2" >"$T/etc-nvme/hostid"
 	case ${3:-frei} in
@@ -143,12 +152,12 @@ zustand() {
 	esac
 }
 zeile() {
-	OUT=$(LF_NVME_DIR=$T/etc-nvme LF_ROFS=$T/rofs selftest_nvme_host)
+	OUT=$(LF_NVME_DIR=$T/etc-nvme LF_ROFS=$T/rofs LF_SYSTEMD_ETC=$T/systemd selftest_nvme_host)
 	RC=$?
 }
 NQN=nqn.2014-08.org.nvmexpress:uuid:11111111-2222-3333-4444-555555555555
 HID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
-OK="LF-SELFTEST: NVMe-Host: Host-NQN und Host-ID von diesem Start"
+OK="LF-SELFTEST: NVMe-Host: Host-NQN und Host-ID von diesem Start, keine Verbindung von selbst"
 
 echo "selftest_nvme_host mit Verzeichnissen statt /etc/nvme und /rofs:"
 zustand "$NQN" "$HID"
@@ -175,6 +184,16 @@ check "die Host-ID steht auch im Image: FAIL" '[[ $RC == 1 && $OUT == *"trägt H
 zustand "$NQN" "$HID" fehlt
 zeile
 check "kein Image unter /rofs: FAIL" '[[ $RC == 1 && $OUT == *"oder fehlt" ]]'
+for u in nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service; do
+	zustand "$NQN" "$HID"
+	rm "$T/systemd/$u"
+	zeile
+	check "$u nicht maskiert: FAIL" '[[ $RC == 1 && $OUT == "LF-SELFTEST: NVMe-Host: $u ist nicht maskiert, das System verbände sich von selbst" ]]'
+done
+zustand "$NQN" "$HID"
+ln -sf /usr/lib/systemd/system/nvmf-autoconnect.service "$T/systemd/nvmf-autoconnect.service"
+zeile
+check "ein Link auf den Dienst statt auf /dev/null: FAIL" '[[ $RC == 1 && $OUT == *"nvmf-autoconnect.service ist nicht maskiert"* ]]'
 
 echo
 if ((fails)); then

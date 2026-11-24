@@ -116,6 +116,8 @@ Anmeldungen und Fehlversuche per SSH stehen mit Adresse und Fingerabdruck im Pro
 
 Sonst bietet Leuchtfeuer im Netz nichts an. rpcbind ist aus, NFS-Freigaben hängst du darum mit NFSv4 ein (`mount -t nfs4 server:/pfad /mnt/ziel`). NFSv3 geht nur mit `-o nolock`, Sperren bleiben dann auf diesem Rechner.
 
+Mit Speicher über NVMe-oF, im Netz oder am Fibre Channel, verbindet sich Leuchtfeuer beim Start nicht von selbst. Von Hand geht es mit `nvme discover` und `nvme connect` (siehe `man nvme-connect`). Die Host-NQN dafür entsteht bei jedem Start neu.
+
 **Eigene SSH-Schlüssel.** Der Stick hat eine kleine Partition `LF-SSH`, die Windows, macOS und Linux als Laufwerk zeigen. Lege dort an einem Rechner, dem du vertraust, die Datei `authorized_keys` ab (oder `authorized_keys.txt`, nur eine der beiden): je Zeile ein öffentlicher Schlüssel, etwa der Inhalt von `~/.ssh/id_ed25519.pub`. Dann gilt:
 
 1. Bei jedem Start liest Leuchtfeuer die Datei, nur lesend und nur von dem Stick, von dem es gestartet ist, und prüft jede Zeile. Was es nicht verwendet, nennt der Assistent auf tty1 mit der Zeilennummer. Sind mehrere Leuchtfeuer-Sticks angesteckt, trägt der Stick zwei Partitionen `LF-SSH` oder ist die Partition größer als im ISO (4 MiB), liest er keine Schlüssel und sagt das.
