@@ -116,7 +116,7 @@ Anmeldungen und Fehlversuche per SSH stehen mit Adresse und Fingerabdruck im Pro
 
 Sonst bietet Leuchtfeuer im Netz nichts an. rpcbind ist aus, NFS-Freigaben hängst du darum mit NFSv4 ein (`mount -t nfs4 server:/pfad /mnt/ziel`). NFSv3 geht nur mit `-o nolock`, Sperren bleiben dann auf diesem Rechner.
 
-Mit Speicher über NVMe-oF, im Netz oder am Fibre Channel, verbindet sich Leuchtfeuer beim Start nicht von selbst. Von Hand geht es mit `nvme discover` und `nvme connect` (siehe `man nvme-connect`). Die Host-NQN dafür entsteht bei jedem Start neu.
+Mit Speicher über NVMe-oF, im Netz oder am Fibre Channel, verbindet sich Leuchtfeuer beim Start nicht von selbst. Von Hand geht es mit `nvme discover` und `nvme connect` (siehe `man nvme-connect`). Host-NQN und Host-ID dafür stehen nicht im ISO, sie entstehen beim Start. Die Host-NQN bildet nvme-cli aus der UUID des Rechners: Auf demselben Rechner ist sie bei jedem Start gleich, auf Rechnern ohne eigene UUID (etwa einer VM ohne gesetzte UUID) überall gleich. Die Host-ID ist bei jedem Start eine neue zufällige und passt darum nicht zur UUID in der Host-NQN, nvme-cli weist beim Verbinden darauf hin.
 
 **Eigene SSH-Schlüssel.** Der Stick hat eine kleine Partition `LF-SSH`, die Windows, macOS und Linux als Laufwerk zeigen. Lege dort an einem Rechner, dem du vertraust, die Datei `authorized_keys` ab (oder `authorized_keys.txt`, nur eine der beiden): je Zeile ein öffentlicher Schlüssel, etwa der Inhalt von `~/.ssh/id_ed25519.pub`. Dann gilt:
 

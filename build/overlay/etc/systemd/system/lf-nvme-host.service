@@ -2,7 +2,8 @@
 # nvme-cli legt Host-NQN und Host-ID für NVMe-oF bei der Installation an. Aus dem ISO wären sie für
 # alle Starts dieselben und stünden im öffentlichen Image (#148), chroot-setup.sh entfernt sie darum.
 # Jeder Start bekommt eigene, so wie nvme-cli sie bei der Installation anlegt: bevor udev die Geräte
-# meldet und bevor sich etwas mit NVMe-oF verbindet.
+# meldet und bevor sich etwas mit NVMe-oF verbindet. nvme gen-hostnqn nimmt dafür die UUID des
+# Rechners (DMI), die Host-NQN ist also je Rechner gleich. Die Host-ID ist je Start zufällig.
 Description=Leuchtfeuer: NVMe-Host-NQN und Host-ID für diesen Start
 DefaultDependencies=no
 Before=systemd-udev-trigger.service nvmefc-boot-connections.service nvmf-autoconnect.service nvmf-connect-nbft.service shutdown.target

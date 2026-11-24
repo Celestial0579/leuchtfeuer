@@ -74,6 +74,10 @@ check "wie nach dem Build: Status 0, nichts gemeldet" '[[ $RC == 0 && -z $OUT ]]
 printf '0123456789abcdef0123456789abcdef\n' >"$T/root/etc/machine-id"
 pruefe
 check "eine ID in /etc/machine-id: gemeldet" '[[ $RC == 1 && $OUT == "/etc/machine-id ist nicht leer" ]]'
+rm "$T/root/etc/machine-id"
+pruefe
+check "keine /etc/machine-id (systemd nähme den Start als ersten): gemeldet" '[[ $RC == 1 && $OUT == "/etc/machine-id fehlt" ]]'
+wurzel
 wurzel
 rm "$T/root/var/lib/dbus/machine-id"
 printf '0123456789abcdef0123456789abcdef\n' >"$T/root/var/lib/dbus/machine-id"
@@ -184,6 +188,10 @@ check "die Host-ID steht auch im Image: FAIL" '[[ $RC == 1 && $OUT == *"trägt H
 zustand "$NQN" "$HID" fehlt
 zeile
 check "kein Image unter /rofs: FAIL" '[[ $RC == 1 && $OUT == *"oder fehlt" ]]'
+zustand "$NQN" "$HID"
+ln -s /nirgends "$T/rofs/etc/nvme/hostid"
+zeile
+check "im Image ein Link ins Leere als Host-ID: FAIL" '[[ $RC == 1 && $OUT == *"trägt Host-NQN oder Host-ID"* ]]'
 for u in nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service; do
 	zustand "$NQN" "$HID"
 	rm "$T/systemd/$u"
