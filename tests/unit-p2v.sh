@@ -126,6 +126,7 @@ check "Volume: nur auf dem gewählten Speicher" 'p2v_ok volid local-lvm:vm-100-d
 check "Pfad vom Knoten: ohne Leerzeichen, Anführungszeichen und .." 'p2v_ok path /dev/pve/vm-100-disk-0 && p2v_ok path "rbd:pool/vm-100-disk-0:conf=/etc/pve/ceph.conf" && ! p2v_ok path "/x y" && ! p2v_ok path "/x;y\"" && ! p2v_ok path /dev/../etc/shadow'
 check "Socket-Ordner auf dem Knoten: nur das Muster von mktemp" 'p2v_ok rdir /run/lf-p2v.Ab12Cd34 && ! p2v_ok rdir / && ! p2v_ok rdir /run/lf-p2v.x && ! p2v_ok rdir "/run/lf-p2v.Ab12Cd34/../x"'
 check "Text vom Quellrechner: nur harmlose Zeichen" '[[ $(p2v_text "Dell Inc. \$(touch x); \`id\` \"a\"") == "Dell Inc. touch x id a" ]]'
+check "Umlaute und ß werden umgeschrieben, nicht weggelassen (#101)" '[[ $(p2v_text "Bürorechner (Modell 7) ÄÖÜ äöü ß") == "Buerorechner Modell 7 AeOeUe aeoeue ss" ]]'
 
 # ---------------------------------------------------------------------------
 echo "SSH-Schlüssel des Knotens:"
@@ -194,6 +195,14 @@ check "freie VM-ID wird erkannt" 'p2v_vmid_free 100'
 touch "$K/vms/101"
 check "vergebene VM-ID wird erkannt" '! p2v_vmid_free 101'
 check "ungültige VM-ID wird gar nicht erst gefragt" '! p2v_vmid_free "100;touch $T/MARKE-vmid" && ! markers'
+touch "$K/vms/100"
+rm -f "$K/vms/105"
+check "Vorschlag nach einem Umzug: nicht die alte, vergebene VM-ID, sondern die nächste freie (#101)" '[[ $(P2V_VMID=100 PVESH_NEXTID=102 p2v_vmid_vorschlag) == 102 ]]'
+check "Vorschlag: eine frühere VM-ID, solange sie frei ist" '[[ $(P2V_VMID=105 PVESH_NEXTID=102 p2v_vmid_vorschlag) == 105 ]]'
+check "Vorschlag ohne frühere VM-ID: die nächste freie" '[[ $(P2V_VMID="" PVESH_NEXTID=102 p2v_vmid_vorschlag) == 102 ]]'
+check "Vorschlag: eine ungültige Antwort des Knotens wird nicht übernommen" '[[ -z $(P2V_VMID="" PVESH_NEXTID="102;x" p2v_vmid_vorschlag) ]]'
+check "Vorschlag: eine ungültige frühere VM-ID wird gar nicht erst gefragt" '[[ $(P2V_VMID="100;touch $T/MARKE-vorschlag" PVESH_NEXTID=102 p2v_vmid_vorschlag) == 102 ]] && ! markers'
+check "der Dialog schlägt die VM-ID mit p2v_vmid_vorschlag vor" 'grep -qF "\"VM-ID der neuen VM:\" \"\$(p2v_vmid_vorschlag)\")" rescue/lib/p2v.sh && ! grep -qF "P2V_VMID:-\$next" rescue/lib/p2v.sh'
 
 # ---------------------------------------------------------------------------
 echo "VM anlegen:"
@@ -246,6 +255,29 @@ check "angelegt, nichts ausgeführt" '! markers && calls | grep -q "^qm|create|"
 desc=$(calls | grep "^qm|create|" | sed "s/.*|--description|//")
 check "die Beschreibung ist ein Argument" '[[ $desc == "P2V vom "*"|" && $desc != *"|"*"|" ]]'
 check "die Beschreibung enthält keine Shell-Zeichen" '[[ $desc != *[\$\`\;\"\(\)]* && $desc != *"'"'"'"* ]]'
+
+echo "Beschreibung: Seriennummer und Umlaute (#101):"
+# Die Seriennummer gibt die Attrappe von cat nur über sudo heraus, wie /sys/class/dmi/id/product_serial
+# (0400, root).
+cat() {
+	case $1 in
+	/sys/class/dmi/id/sys_vendor) echo "LENOVO" ;;
+	/sys/class/dmi/id/product_name) echo "Bürorechner (Modell 7)" ;;
+	/sys/class/dmi/id/product_serial) [[ -n ${ALS_ROOT:-} ]] && echo "PF-12 34" ;;
+	*) command cat "$@" ;;
+	esac
+}
+sudo() { ALS_ROOT=1 "$@"; }
+setvm
+p2v_create
+desc=$(calls | grep "^qm|create|" | sed "s/.*|--description|//")
+check "die Seriennummer kommt über sudo, Umlaute sind umgeschrieben" '[[ $desc == *" Quelle: LENOVO Buerorechner Modell 7, Seriennr. PF-12 34.|" ]]'
+sudo() { "$@"; }
+setvm
+p2v_create
+desc=$(calls | grep "^qm|create|" | sed "s/.*|--description|//")
+check "ohne Seriennummer: kein Teil dafür" '[[ $desc == *" Quelle: LENOVO Buerorechner Modell 7.|" ]]'
+unset -f cat
 
 echo "Antworten des Knotens beim Anlegen:"
 setvm

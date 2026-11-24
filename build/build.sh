@@ -294,10 +294,15 @@ boot_files() {
 # 5. SquashFS
 # ---------------------------------------------------------------------------
 squash() {
+	local cli
 	log "Erzeuge Manifest und SquashFS"
 	chroot_umount
 	chroot "$CHROOT" dpkg-query -W --showformat='${Package} ${Version}\n' >"$ISO/casper/filesystem.manifest"
 	cp "$ISO/casper/filesystem.manifest" "$OUT/${ISO_NAME%.iso}.manifest"
+	# Was nicht aus Paketen kommt, steht nur im Manifest des Releases: das Basis-Image des Builds
+	# (LF_BASIS_IMAGE aus build.yml) und die Fassung der Claude Code CLI aus chroot-setup.sh.
+	cli=$(sed -n 's/^CLAUDE_CLI_VERSION="\([0-9.]*\)"$/\1/p' "$SRC/build/chroot-setup.sh")
+	printf '%s %s\n' lf-basis-image "${LF_BASIS_IMAGE:-unbekannt}" claude-code-cli "${cli:-unbekannt}" >>"$OUT/${ISO_NAME%.iso}.manifest"
 	rm -f "$ISO/casper/filesystem.squashfs"
 	# Keine SSH-Hostschlüssel im Image (GHSA-72hw-w482-prv6), siehe chroot-setup.sh.
 	if compgen -G "$CHROOT/etc/ssh/ssh_host_*" >/dev/null; then

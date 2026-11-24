@@ -9,6 +9,20 @@ log() { printf '\033[1;33m  ->\033[0m %s\n' "$*"; }
 # (laut https://code.claude.com/docs/en/desktop-linux).
 CLAUDE_DESKTOP_FPR="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 
+# Claude Code CLI in fester Fassung: die Datei für linux-x64 und ihr sha256 laut Manifest des
+# Herstellers (https://downloads.claude.ai/claude-code-releases/<Fassung>/manifest.json). Für eine
+# neue Fassung beide Werte zusammen ändern. Passt die Datei nicht, bricht der Build ab.
+CLAUDE_CLI_VERSION="2.1.330"
+CLAUDE_CLI_SHA256="f390eaa0814e6a1bff74cbb47acb74cb9c89d30ced809fe0af5af00c7bfe8ebb"
+
+# claude_cli_laden DATEI   Lädt die Claude Code CLI in der festen Fassung nach DATEI und prüft den
+#   festgelegten sha256. Status ungleich 0, wenn der Download scheitert oder die Datei nicht passt.
+#   Ein Installationsskript aus dem Netz läuft dabei nicht.
+claude_cli_laden() {
+	curl -fsSL -o "$1" "https://downloads.claude.ai/claude-code-releases/$CLAUDE_CLI_VERSION/linux-x64/claude" || return 1
+	printf '%s  %s\n' "$CLAUDE_CLI_SHA256" "$1" | sha256sum -c --status
+}
+
 # Kein Dienststart im chroot
 cat >/usr/sbin/policy-rc.d <<'EOF'
 #!/bin/sh
@@ -46,15 +60,23 @@ apt-get update -qq
 # Ohne Recommends: QEMU/OVMF für Cowork wird im Rettungssystem nicht gebraucht.
 apt-get install -y -qq --no-install-recommends claude-desktop
 
-log "Claude Code CLI (nativer Installer)"
-inst_home="$(mktemp -d)"
-HOME="$inst_home" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
-claude_real="$(readlink -f "$inst_home/.local/bin/claude")"
+log "Claude Code CLI $CLAUDE_CLI_VERSION (feste Fassung, sha256 geprüft)"
+claude_real="$(mktemp)"
+if ! claude_cli_laden "$claude_real"; then
+	echo "FEHLER: Die Claude Code CLI $CLAUDE_CLI_VERSION ließ sich nicht laden oder hat nicht den sha256 $CLAUDE_CLI_SHA256" >&2
+	rm -f "$claude_real"
+	exit 1
+fi
 # Die CLI liegt neben dem Assistenten. /usr/local/bin/claude ist ein Skript aus rescue/bin, das
 # sie ohne Projekt-Einstellungen startet (--setting-sources user).
 install -m 0755 "$claude_real" /usr/local/lib/lf/claude-cli
-rm -rf "$inst_home"
-/usr/local/lib/lf/claude-cli --version
+rm -f "$claude_real"
+cli_v="$(/usr/local/lib/lf/claude-cli --version)"
+echo "$cli_v"
+if [[ $cli_v != "$CLAUDE_CLI_VERSION "* ]]; then
+	echo "FEHLER: claude-cli --version meldet '$cli_v', erwartet $CLAUDE_CLI_VERSION" >&2
+	exit 1
+fi
 # Auch wenn eine spätere ~/.bashrc ~/.local/bin wieder vorn in den PATH setzt: In jeder
 # interaktiven Shell ist "claude" das Skript des Rettungssystems.
 cat >>/etc/bash.bashrc <<'EOF'
