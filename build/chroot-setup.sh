@@ -184,7 +184,7 @@ fi
 systemctl mask swap.target >/dev/null 2>&1 || true
 
 log "Dienste"
-systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service lf-passwort-sperre.service lf-ssh-schluessel.service NetworkManager.service
+systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service lf-passwort-sperre.service lf-ssh-schluessel.service lf-nvme-host.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # ssh.service und ssh.socket starten nur mit der Regel, die lf-claude den Weg zu sshd auf diesem
@@ -216,7 +216,11 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /var/log/*.log /var/log/apt/* /root/.cache
 rm -f /usr/sbin/policy-rc.d
 : >/etc/machine-id
-# D-Bus nennt dieselbe Maschinen-ID wie systemd, die bei jedem Start neu entsteht. Als eigene Datei
-# aus dem Build hätten alle Starts derselben ISO dieselbe D-Bus-ID, und sie stünde im öffentlichen
-# ISO (#144). selftest_machine_id prüft es beim Start.
+# Ist /etc/machine-id beim Start leer, übernimmt systemd eine Datei /var/lib/dbus/machine-id als
+# Maschinen-ID. Aus dem Build hätten so alle Starts derselben ISO dieselbe ID, und sie stünde im
+# öffentlichen ISO (#144). Einem Link folgt systemd an dieser Stelle nicht: Die ID entsteht bei jedem
+# Start neu, und D-Bus nennt dieselbe. selftest_machine_id prüft es beim Start.
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
+# Host-NQN und Host-ID für NVMe-oF legt nvme-cli bei der Installation an. Auch sie wären für alle
+# Starts derselben ISO dieselben (#148). Eigene legt lf-nvme-host.service bei jedem Start an.
+rm -f /etc/nvme/hostnqn /etc/nvme/hostid
