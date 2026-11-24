@@ -204,10 +204,27 @@ p2v_check_all() {
 	for d in "${P2V_SRC[@]}"; do clone_path_ok "$d" || return 1; done
 }
 
-# p2v_create   Legt die VM und je Quell-Disk ein Volume an. Setzt P2V_VOLS.
+# p2v_vol_format VOLID   Das Format, in dem Proxmox VE das Volume angelegt hat. Proxmox VE liest es
+#   selbst aus dem Namen: die Endung .qcow2 ist qcow2, .raw oder keine Endung ist raw. Auf einem
+#   LVM-Speicher mit Snapshots als Volume-Kette (PVE 9) entsteht so auch ohne --format ein
+#   qcow2-Volume (#157). Jede andere Endung, etwa .vmdk, gibt nichts aus und Status 1: Dann wird
+#   das Volume nicht beschrieben.
+p2v_vol_format() {
+	local name=${1#*:}
+	name=${name##*/}
+	case $name in
+	*.qcow2) echo qcow2 ;;
+	*.raw) echo raw ;;
+	*.*) return 1 ;;
+	*) echo raw ;;
+	esac
+}
+
+# p2v_create   Legt die VM und je Quell-Disk ein Volume an. Setzt P2V_VOLS und je Volume dessen
+#   Format in P2V_FMTS (p2v_vol_format).
 p2v_create() {
-	local net="e1000e,bridge=$P2V_BRIDGE" desc serial i mib vol name fmt=() qfmt="" out boot=sata0
-	P2V_VOLS=()
+	local net="e1000e,bridge=$P2V_BRIDGE" desc serial i mib vol name fmt=() qfmt="" out boot=sata0 f
+	P2V_VOLS=() P2V_FMTS=()
 	p2v_check_all || { log "P2V: Werte ungültig, keine VM angelegt"; return 1; }
 	[[ -n $P2V_VLAN ]] && net+=",tag=$P2V_VLAN"
 	# Die Seriennummer darf nur root lesen (0400, #101). Fehlt sie, fehlt auch der Teil dafür.
@@ -227,9 +244,10 @@ p2v_create() {
 		out=$(p2v_r pvesm alloc "$P2V_STOR" "$P2V_VMID" "$name" "${mib}M" "${fmt[@]}")
 		vol=$(sed -n "s/^successfully created '\(.*\)'\$/\1/p" <<<"$out" | tail -n 1)
 		p2v_ok volid "$vol" || { log "P2V: Volume für ${P2V_SRC[i]} nicht angelegt: $out"; return 1; }
+		f=$(p2v_vol_format "$vol") || { log "P2V: Format von $vol unbekannt, es wird nicht beschrieben"; return 1; }
 		p2v_r qm set "$P2V_VMID" "--sata$i" "$vol,discard=on,ssd=1" >>"$LF_LOG" || { log "P2V: $vol nicht angehängt"; return 1; }
-		P2V_VOLS+=("$vol")
-		log "P2V: ${P2V_SRC[i]} -> $vol (sata$i, $mib MiB)"
+		P2V_VOLS+=("$vol") P2V_FMTS+=("$f")
+		log "P2V: ${P2V_SRC[i]} -> $vol (sata$i, $mib MiB, $f)"
 	done
 	if [[ $P2V_FIRMWARE == uefi ]]; then
 		p2v_r qm set "$P2V_VMID" --bios ovmf --efidisk0 "$P2V_STOR:1,efitype=4m,pre-enrolled-keys=1$qfmt" >>"$LF_LOG" || return 1
@@ -259,11 +277,11 @@ p2v_nbd_free() {
 }
 
 # p2v_attach   Exportiert jedes Volume auf dem Knoten mit qemu-nbd an einem Unix-Socket und
-# bindet es hier als /dev/nbdN ein. Setzt P2V_NBD und P2V_PIDS.
+# bindet es hier als /dev/nbdN ein. Setzt P2V_NBD und P2V_PIDS. qemu-nbd bekommt das Format, in dem
+# Proxmox VE das Volume angelegt hat (P2V_FMTS), nicht eins, das zum Speichertyp passen müsste (#157).
 p2v_attach() {
-	local i vol path ifmt=raw sock rsock dev n
+	local i vol path ifmt sock rsock dev n
 	P2V_NBD=() P2V_PIDS=()
-	[[ " $P2V_STORAGE_QCOW2 " == *" $P2V_STYP "* ]] && ifmt=qcow2
 	sudo modprobe nbd max_part=16 2>/dev/null
 	# Ist das Modul schon ohne Partitionen geladen (Klonen mit Verkleinern), fehlten die
 	# Partitionen der Volumes. Dann wird nicht kopiert.
@@ -272,7 +290,8 @@ p2v_attach() {
 	P2V_RDIR=$(p2v_r mktemp -d /run/lf-p2v.XXXXXXXX)
 	p2v_ok rdir "$P2V_RDIR" || { P2V_RDIR=""; return 1; }
 	for i in "${!P2V_VOLS[@]}"; do
-		vol=${P2V_VOLS[i]}
+		vol=${P2V_VOLS[i]} ifmt=${P2V_FMTS[i]:-}
+		[[ $ifmt == raw || $ifmt == qcow2 ]] || { log "P2V: Format von $vol unbekannt, es wird nicht beschrieben"; return 1; }
 		path=$(p2v_r pvesm path "$vol")
 		p2v_ok path "$path" || { log "P2V: Pfad zu $vol ungültig: $path"; return 1; }
 		sock="$P2V_DIR/nbd$i.sock" rsock="$P2V_RDIR/nbd$i.sock"
@@ -389,7 +408,7 @@ p2v_wizard() {
 	tmux_job_frei lf-p2v || return 0
 	ui_msg "Umzug in eine Proxmox-VM" "Macht aus diesem Rechner eine VM auf einem Proxmox-VE-Knoten.\n\n 1. Netzwerk prüfen\n 2. Knoten wählen, seinen SSH-Schlüssel bestätigen, anmelden\n 3. Speicher und VM-Daten wählen\n 4. Quell-Disks wählen\n 5. VM anlegen und kopieren: nur belegte Bereiche, die Volumes bleiben dünn\n\nDie Disks dieses Rechners werden nur gelesen und sofort schreibgeschützt.\n\nVoraussetzungen:\n - Windows vollständig heruntergefahren (Schnellstart aus, kein Ruhezustand)\n - BitLocker angehalten oder entschlüsselt\n - SSH-Zugang als root zum Knoten"
 	install -d -m 700 "$P2V_DIR"
-	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_SRC=() P2V_SRC_ID=() P2V_RDIR="" P2V_SSH=()
+	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_FMTS=() P2V_SRC=() P2V_SRC_ID=() P2V_RDIR="" P2V_SSH=()
 	p2v_net_step && p2v_connect_step && p2v_vm_step && p2v_source_step && p2v_settings_step &&
 		p2v_confirm_step && p2v_run_step
 	p2v_cleanup

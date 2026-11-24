@@ -205,6 +205,21 @@ check "Vorschlag: eine ungültige frühere VM-ID wird gar nicht erst gefragt" '[
 check "der Dialog schlägt die VM-ID mit p2v_vmid_vorschlag vor" 'grep -qF "\"VM-ID der neuen VM:\" \"\$(p2v_vmid_vorschlag)\")" rescue/lib/p2v.sh && ! grep -qF "P2V_VMID:-\$next" rescue/lib/p2v.sh'
 
 # ---------------------------------------------------------------------------
+echo "Format der Volumes (#157):"
+for t in "local-lvm:vm-100-disk-0 raw" "tank:vm-100-disk-1 raw" "local-lvm:vm-100-disk-0.qcow2 qcow2" \
+	"local:100/vm-100-disk-0.qcow2 qcow2" "local:100/vm-100-disk-0.raw raw"; do
+	v=${t% *} want=${t#* }
+	check "$v: $want" '[[ $(p2v_vol_format "$v") == "$want" ]]'
+done
+for v in local:100/vm-100-disk-0.vmdk local-lvm:vm-100-disk-0.qcow2.alt local:100/vm-100-disk-0.subvol; do
+	check "$v: unbekannt, Status 1, keine Ausgabe" 'out=$(p2v_vol_format "$v"); (($? == 1)) && [[ -z $out ]]'
+done
+pa=$(sed -n '/^p2v_attach() {$/,/^}$/p' rescue/lib/p2v.sh)
+check "p2v_attach: qemu-nbd bekommt das Format aus P2V_FMTS, nicht aus dem Speichertyp" '[[ -n $pa ]] && ! grep -qE "P2V_STYP|P2V_STORAGE_QCOW2" <<<"$pa" && grep -qF "ifmt=\${P2V_FMTS[i]:-}" <<<"$pa" && grep -qF "qemu-nbd -f \"\$ifmt\"" <<<"$pa"'
+check "p2v_attach: ohne bekanntes Format kein qemu-nbd (fail-closed)" 'l1=$(grep -nF "[[ \$ifmt == raw || \$ifmt == qcow2 ]] || {" <<<"$pa" | cut -d: -f1); l2=$(grep -nF "exec qemu-nbd" <<<"$pa" | cut -d: -f1); [[ -n $l1 && -n $l2 ]] && ((l1 < l2)) && sed -n "${l1}p" <<<"$pa" | grep -q "return 1"'
+check "P2V_FMTS wird mit P2V_VOLS zurückgesetzt (Assistent und Selbsttest)" 'grep -q "P2V_VOLS=() P2V_FMTS=()" rescue/lib/p2v.sh && grep -q "P2V_VOLS=() P2V_FMTS=()" rescue/lf && [[ $(grep -c "P2V_VOLS=()" rescue/lib/p2v.sh rescue/lf | awk -F: "{s+=\$2} END {print s}") == $(grep -c "P2V_VOLS=() P2V_FMTS=()" rescue/lib/p2v.sh rescue/lf | awk -F: "{s+=\$2} END {print s}") ]]'
+
+# ---------------------------------------------------------------------------
 echo "VM anlegen:"
 setvm() {
 	P2V_NODE=pve1 P2V_STOR=local-lvm P2V_STYP=lvmthin P2V_VMID=100 P2V_BRIDGE=vmbr0 P2V_VLAN=""
@@ -225,6 +240,25 @@ setvm
 P2V_STOR=local P2V_STYP=dir P2V_TPM=0
 p2v_create
 check "Verzeichnisspeicher: qcow2, auch für die EFI-Disk" 'calls | grep -qx "pvesm|alloc|local|100|vm-100-disk-0.qcow2|33M|--format|qcow2|" && calls | grep -qx "qm|set|100|--bios|ovmf|--efidisk0|local:1,efitype=4m,pre-enrolled-keys=1,format=qcow2|" && ! calls | grep -q tpmstate'
+check "Verzeichnisspeicher: qemu-nbd bekommt qcow2" '[[ ${P2V_FMTS[*]} == qcow2 ]]'
+setvm
+p2v_create
+check "lvmthin: qemu-nbd bekommt raw" '[[ ${P2V_VOLS[*]} == local-lvm:vm-100-disk-0 && ${P2V_FMTS[*]} == raw ]]'
+# LVM mit Snapshots als Volume-Kette (PVE 9): Ohne --format legt pvesm alloc ein qcow2-Volume an (#157).
+setvm
+P2V_STYP=lvm
+export PVESM_ALLOC="successfully created 'local-lvm:vm-100-disk-0.qcow2'"
+p2v_create
+rc=$?
+check "LVM mit Volume-Kette: alloc wie bisher ohne --format, qemu-nbd bekommt qcow2 wie das Volume (#157)" '((rc == 0)) && calls | grep -qx "pvesm|alloc|local-lvm|100|vm-100-disk-0|33M|" && [[ ${P2V_VOLS[*]} == local-lvm:vm-100-disk-0.qcow2 && ${P2V_FMTS[*]} == qcow2 ]] && calls | grep -qx "qm|set|100|--sata0|local-lvm:vm-100-disk-0.qcow2,discard=on,ssd=1|"'
+check "LVM mit Volume-Kette: EFI-Disk und TPM legt Proxmox VE selbst an, ohne vorgegebenes Format" 'calls | grep -qx "qm|set|100|--bios|ovmf|--efidisk0|local-lvm:1,efitype=4m,pre-enrolled-keys=1|" && calls | grep -qx "qm|set|100|--tpmstate0|local-lvm:1,version=v2.0|"'
+setvm
+P2V_STYP=lvm
+export PVESM_ALLOC="successfully created 'local-lvm:vm-100-disk-0.vmdk'"
+: >"$LF_LOG"
+p2v_create
+rc=$?
+check "ein Volume in einem anderen Format (.vmdk): abgebrochen, nicht angehängt, nichts beschrieben (#157)" '((rc != 0)) && ! calls | grep -q "^qm|set|100|--sata0" && grep -q "Format von local-lvm:vm-100-disk-0.vmdk unbekannt" "$LF_LOG" && [[ ${#P2V_FMTS[@]} == 0 ]]'
 
 for bad in "P2V_NAME=x;touch $T/MARKE-name" "P2V_NAME=\$(touch $T/MARKE-name2)" "P2V_VLAN=5,trunks=1" "P2V_BRIDGE=vmbr0,firewall=0" \
 	"P2V_MEM=4096;touch $T/MARKE-mem" "P2V_CPU=host,flags=+x" "P2V_STOR=a;b" "P2V_SRC=/dev/sdx;x" "P2V_TPM=2"; do
