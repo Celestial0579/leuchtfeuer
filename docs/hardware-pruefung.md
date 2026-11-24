@@ -150,7 +150,7 @@ Nur mit Internet und eigenem Konto.
    - Ohne setuid für `fusermount3` (#153): Der Dialog zum Anhängen einer Datei öffnet sich und zeigt die Dateien.
    - Mit der Regel für das Netz von Claude (Schritt 9) meldet sich die App an und arbeitet wie vorher.
 9. **Netz für Claude:** Claude bitten, die Weboberfläche des Routers abzufragen (`curl -sI http://<Adresse des Routers>`), einen Rechner im lokalen Netz anzusprechen und eine öffentliche Seite mit WebFetch zu lesen.
-   Erwartet: Router und lokales Netz scheitern sofort, `sudo nft list counter inet lf_claude_netz abgewiesen` zählt mit. WebFetch und der Login gehen. Im Protokoll steht kein Fehler der Prüfung neuer CLI-Versionen (`lf-claude-check`).
+   Erwartet: Router und lokales Netz scheitern sofort, `sudo nft list counter inet lf_claude_netz abgewiesen` zählt mit. WebFetch und der Login gehen. Über die öffentliche Adresse des Routers auf Port 443 kann seine Weboberfläche erreichbar bleiben, das ist eine bekannte Grenze. Im Protokoll steht kein Fehler der Prüfung neuer CLI-Versionen (`lf-claude-check`).
 
 9 Selbsttest auf echter Hardware
 --------------------------------

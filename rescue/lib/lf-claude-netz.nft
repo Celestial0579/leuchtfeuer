@@ -15,6 +15,10 @@
 # besondere Netze, Multicast und Broadcast, jeder andere Port und jedes andere Protokoll. Andere
 # Benutzer betrifft sie nicht.
 #
+# Grenze: Was der Router des Netzes auf Port 443 seiner öffentlichen Adresse anbietet oder
+# weiterleitet, oft auch seine eigene Weboberfläche (NAT-Loopback), erreicht lf-claude weiter. Die
+# öffentliche Adresse ist auf diesem Rechner nicht bekannt, eine Regel nach Adresse sieht sie nicht.
+#
 # Geladen von lf-claude-netz-sperre.service beim Start, bevor das Netz kommt. Claude startet nur,
 # wenn genau diese Regel geladen ist (claude_netz_regel in claude.sh). Erneutes Laden ersetzt die
 # Tabelle. Den Zähler liest selftest_netz_claude. Die Kette ausgang läuft nach der aus
@@ -36,13 +40,14 @@ table inet lf_claude_netz {
 			198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4 }
 	}
 
-	# Dasselbe für IPv6, dazu die Bereiche, die eine IPv4-Adresse einbetten (NAT64, 6to4, Teredo):
-	# Über sie käme eine Verbindung sonst an ein privates IPv4-Ziel.
+	# Dasselbe für IPv6, dazu die Bereiche, die eine IPv4-Adresse einbetten (IPv4-kompatibel, NAT64,
+	# 6to4, Teredo): Über sie käme eine Verbindung sonst an ein privates IPv4-Ziel. ::/96 enthält auch
+	# :: und ::1.
 	set privat6 {
 		type ipv6_addr
 		flags interval
-		elements = { ::/127, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/23,
-			2001:db8::/32, 2002::/16, fc00::/7, fe80::/10, fec0::/10, ff00::/8 }
+		elements = { ::/96, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/23,
+			2001:db8::/32, 2002::/16, 3fff::/20, fc00::/7, fe80::/10, fec0::/10, ff00::/8 }
 	}
 
 	chain ausgang {

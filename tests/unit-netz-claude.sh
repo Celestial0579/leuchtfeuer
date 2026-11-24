@@ -200,6 +200,8 @@ im_namespace() {
 	erwarte "NAT64 mit 10.0.0.1" abgewiesen 1 1000 tcp 64:ff9b::a00:1 443
 	erwarte "6to4 mit 10.0.0.1" abgewiesen 1 1000 tcp 2002:a00:1:: 443
 	erwarte "Dokumentation 2001:db8::1" abgewiesen 1 1000 tcp 2001:db8::1 443
+	erwarte "Dokumentation 3fff::1" abgewiesen 1 1000 tcp 3fff::1 443
+	erwarte "IPv4-kompatibel ::a00:1" abgewiesen 1 1000 tcp ::a00:1 443
 	erwarte "öffentlich, Port 80" abgewiesen 1 1000 tcp 1.1.1.1 80
 	erwarte "öffentlich IPv6, Port 80" abgewiesen 1 1000 tcp 2606:4700:4700::1111 80
 	erwarte "öffentlich, Port 22" abgewiesen 1 1000 tcp 1.1.1.1 22
@@ -260,7 +262,7 @@ check "erlaubt sind nur DNS an 127.0.0.53, $ADDR ab Port 1024, Antworten von dor
 check "HTTPS erst nach eigenen, privaten und besonderen Adressen" '[[ $(sed -n "/^	chain claude {$/,/^	}$/p" "$RULES" | grep -nE "fib daddr type|@privat4|@privat6|tcp dport 443" | cut -d: -f1 | tr "\n" " ") =~ ^([0-9]+)\ ([0-9]+)\ ([0-9]+)\ ([0-9]+)\ $ ]] && ((BASH_REMATCH[1] < BASH_REMATCH[4] && BASH_REMATCH[2] < BASH_REMATCH[4] && BASH_REMATCH[3] < BASH_REMATCH[4]))'
 check "Eingang: über $ADDR nur Sockets genau an dieser Adresse" 'grep -qxF "		ip daddr $ADDR socket wildcard 1 goto abweisen" "$RULES" && grep -qxF "		type filter hook input priority filter + 10; policy accept;" "$RULES"'
 check "Abweisen zählt im Zähler abgewiesen" '[[ $(sed -n "/^	chain abweisen {$/,/^	}$/p" "$RULES" | grep -vE "^[[:space:]]*(#|$)" | tr -d "\t" | tr "\n" "|") == "chain abweisen {|counter name \"abgewiesen\"|meta l4proto tcp reject with tcp reset|reject with icmpx admin-prohibited|}|" ]]'
-for netz in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8 224.0.0.0/4 240.0.0.0/4 fc00::/7 fe80::/10 ff00::/8 64:ff9b::/96 2002::/16; do
+for netz in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8 224.0.0.0/4 240.0.0.0/4 ::/96 fc00::/7 fe80::/10 ff00::/8 64:ff9b::/96 2002::/16 3fff::/20; do
 	check "privat: $netz" 'grep -qE "(\{ |, |^[[:space:]]+)${netz//./\\.}(,| \})" "$RULES"'
 done
 
