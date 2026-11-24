@@ -82,6 +82,8 @@ jobs:
       # CLI-Fassung: Neue Fassungen meldet claude-cli.yml, nur aus einem Manifest mit gültiger Signatur (#136).
       # Maschinen-ID: je Start neu, D-Bus nennt dieselbe, im Image keine ID (#144). Echt prüft es selftest_machine_id.
       # NVMe-Host: Host-NQN und Host-ID je Start, keine im Image, build.sh verweigert sonst das squashfs (#148).
+      # setuid, setgid und Capabilities nur, wo Leuchtfeuer sie braucht, build.sh verweigert sonst das
+      # squashfs (#153). Echt prüft es selftest_setuid.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue gdisk xorriso mtools dosfstools openssh-server
@@ -133,6 +135,7 @@ jobs:
           bash tests/unit-cli-fassung.sh
           bash tests/unit-machine-id.sh
           bash tests/unit-nvme-host.sh
+          bash tests/unit-setuid.sh
       # Job-Fenster mit echtem tmux in einem Pseudo-Terminal.
       - name: Unit-Tests
         run: |
