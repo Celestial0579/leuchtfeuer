@@ -227,9 +227,10 @@ boot_files() {
 	local theme="$ISO/boot/grub/themes/leuchtfeuer"
 	install -d "$theme" "$ISO/boot/grub/fonts"
 	cp "$SRC/build/grub/theme/theme.txt" "$theme/theme.txt"
-	solid_png "$theme/select_c.png" "#AB5019"
-	solid_png "$theme/select_w.png" "#AB5019"
-	solid_png "$theme/select_e.png" "#AB5019"
+	# Fläche der Auswahl: Glut in der dunklen Fassung wie in theme.txt, die Schrift #141715 darauf hat 5,79:1
+	solid_png "$theme/select_c.png" "#DB7745"
+	solid_png "$theme/select_w.png" "#DB7745"
+	solid_png "$theme/select_e.png" "#DB7745"
 
 	local pagella dejavu title_font menu_font
 	# Erste gefundene Schrift gewinnt, die weiteren sind Ersatz

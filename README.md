@@ -107,7 +107,7 @@ Farben und Schriften stammen von [firestrike.de](https://firestrike.de). Sie gel
 
 | Grund | Text | Stahl | Stahl hell | Funke | Glut | Akzent |
 |---|---|---|---|---|---|---|
-| `#141715` | `#E8EBE7` | `#33414B` | `#B4C6D1` | `#E8A33D` | `#AB5019` | `#D9713C` |
+| `#141715` | `#E8EBE7` | `#33414B` | `#B4C6D1` | `#E8A33D` | `#A24C18` | `#DB7745` |
 
 Lizenz
 ------
