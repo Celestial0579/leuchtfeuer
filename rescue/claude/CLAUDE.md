@@ -144,6 +144,11 @@ Für alle diese Texte gilt:
 - Werkzeuge: ddrescue, ddrescuelog, partclone, ntfs-3g/ntfsresize, testdisk/photorec, smartctl, nvme-cli,
   hdparm, sgdisk/sfdisk, cryptsetup, dislocker (BitLocker), chntpw, qemu-img/qemu-nbd, rsync, rclone.
   Die meisten brauchen root. Du startest sie nicht direkt, sondern über die lf-Werkzeuge (siehe oben).
+- Netz: Du erreichst nur HTTPS (Port 443) im Internet und die Namensauflösung. Dienste auf diesem
+  Rechner, Rechner im lokalen Netz (Router, NAS, Drucker, Freigaben) und andere Ports sperrt eine
+  Regel des Rettungssystems, solche Verbindungen scheitern sofort. Das ist kein Fehler im Netz.
+  Braucht eine Aufgabe einen Rechner im Netz, sag es dem Techniker: Umzüge und Netzfreigaben macht
+  der Assistent.
 
 ## Stil
 

@@ -79,6 +79,7 @@ selftest() {
 	selftest_netz || ok=0
 	selftest_lauscht || ok=0
 	selftest_ssh_lokal || ok=0
+	selftest_netz_claude || ok=0
 	selftest_ssh "$dir" || ok=0
 	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0
 	selftest_ptrace || ok=0
@@ -629,6 +630,62 @@ selftest_ssh_lokal_regel() {
 selftest_ssh_lokal_treffer() {
 	nft -j list chain inet lf_claude_ssh ausgang 2>/dev/null |
 		jq -er '[.nftables[] | .rule? // empty | select(.comment == "lf-claude-ssh") | .expr[] | .counter? // empty | .packets] | if length == 1 then .[0] else empty end'
+}
+
+# selftest_netz_claude   lf-claude erreicht nur HTTPS im Internet und DNS (GHSA-w376-95wf-5v9q),
+#   keinen Dienst auf diesem Rechner und keinen Rechner im lokalen Netz. Geprüft wird: geladen ist
+#   genau die Regel aus lf-claude-netz.nft, ihr Dienst ist aktiv (claude_netz_regel). Dann je Ziel
+#   eine Verbindung von lf-claude: Sie scheitert und trifft die Regel, der Zähler abgewiesen steigt.
+#   Ziele sind 127.0.0.1 auf Port 9 und 443, mit IPv6 ::1, je eine eigene Adresse der Karten (IPv4,
+#   IPv6 global, IPv6 link-local mit %Karte), und, soweit es eine Route dorthin gibt, eine private
+#   Adresse (10.255.255.1, Port 443) und eine öffentliche auf Port 80 (1.1.1.1). Abgewiesen wird
+#   auf diesem Rechner, bevor ein Paket hinausgeht. Eine Verbindung von root trifft die Regel nicht.
+#   Erlaubte Ziele prüft der Selbsttest nicht, das ginge nur über das Netz. Dass lf-claude die
+#   Attrappe auf 127.76.70.1 erreicht, zeigt der Lauf von lf-claude-check als lf-claude.
+selftest_netz_claude() {
+	local a ziel vor nach good=1
+	local -a ziele=("127.0.0.1 9" "127.0.0.1 443")
+	if ! claude_netz_regel; then
+		echo "LF-SELFTEST: Netz für Claude: die Regel aus lf-claude-netz.nft ist nicht geladen oder $CLAUDE_NETZ_DIENST nicht aktiv (nft list table inet lf_claude_netz)"
+		return 1
+	fi
+	ip -6 -o addr show dev lo 2>/dev/null | grep -q ' ::1/128 ' && ziele+=("::1 443")
+	a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+	[[ -n $a ]] && ziele+=("$a 443")
+	a=$(ip -6 -o addr show scope global -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+	[[ -n $a ]] && ziele+=("$a 443")
+	a=$(ip -6 -o addr show scope link -tentative -dadfailed 2>/dev/null | awk '{sub(/\/.*/, "", $4); sub(/@.*/, "", $2); print $4 "%" $2; exit}')
+	[[ -n $a ]] && ziele+=("$a 443")
+	ip -4 route get 10.255.255.1 >/dev/null 2>&1 && ziele+=("10.255.255.1 443")
+	ip -4 route get 1.1.1.1 >/dev/null 2>&1 && ziele+=("1.1.1.1 80")
+	for ziel in "${ziele[@]}"; do
+		vor=$(selftest_netz_claude_treffer)
+		# shellcheck disable=SC2086
+		if selftest_as timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ $ziel 2>/dev/null; then
+			echo "LF-SELFTEST: Netz für Claude: lf-claude erreicht ${ziel/ /:}"
+			good=0
+		fi
+		nach=$(selftest_netz_claude_treffer)
+		if [[ ! $vor =~ ^[0-9]+$ || ! $nach =~ ^[0-9]+$ ]] || ((nach <= vor)); then
+			echo "LF-SELFTEST: Netz für Claude: die Verbindung von lf-claude auf ${ziel/ /:} trifft die Regel nicht (Zähler ${vor:-?} -> ${nach:-?})"
+			good=0
+		fi
+	done
+	vor=$(selftest_netz_claude_treffer)
+	timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ 127.0.0.1 9 2>/dev/null || :
+	nach=$(selftest_netz_claude_treffer)
+	if [[ ! $vor =~ ^[0-9]+$ || $nach != "$vor" ]]; then
+		echo "LF-SELFTEST: Netz für Claude: die Regel trifft auch root (Zähler ${vor:-?} -> ${nach:-?})"
+		good=0
+	fi
+	((good)) && echo "LF-SELFTEST: Netz für Claude: Verbindungen von lf-claude an eigene, private und andere Ziele als HTTPS scheitern an der Regel (${ziele[*]/ /:}), root trifft sie nicht"
+	((good))
+}
+
+# selftest_netz_claude_treffer   Wie viele Pakete die Regel aus lf-claude-netz.nft bisher abgewiesen hat.
+selftest_netz_claude_treffer() {
+	nft -j list counter inet lf_claude_netz abgewiesen 2>/dev/null |
+		jq -er '[.nftables[] | .counter? // empty | .packets] | if length == 1 then .[0] else empty end'
 }
 
 # selftest_ssh ORDNER   SSH (#99). Das Laden der Schlüssel von LF-SSH ist beim Start gelaufen, und

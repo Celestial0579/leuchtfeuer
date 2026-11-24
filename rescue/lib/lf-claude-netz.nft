@@ -1,0 +1,87 @@
+# Leuchtfeuer (GHSA-w376-95wf-5v9q): lf-claude erreicht nur HTTPS im Internet und die
+# Namensauflösung, keinen Dienst auf diesem Rechner und keinen Rechner im lokalen Netz. Die Regel
+# aus lf-claude-ssh.nft sieht nur Port 22 an eigenen Adressen. Leitet ein anderer Rechner eine
+# Verbindung auf diesen Rechner zurück (Router mit Portweiterleitung und NAT-Hairpin, Proxy im
+# Netz), ist ihr Ziel nicht lokal. Diese Regel lässt solche Ziele gar nicht erst zu.
+#
+# Erlaubt sind für lf-claude nur:
+# - DNS an den Resolver auf diesem Rechner (systemd-resolved, 127.0.0.53, Port 53, UDP und TCP),
+# - TCP auf Port 443 an öffentliche Adressen,
+# - TCP an 127.76.70.1 ab Port 1024: Dort lauscht die Attrappe der API, mit der lf-claude-check
+#   eine neue Version der CLI prüft (claude-check.sh). Ein Dienst, der auf allen Adressen lauscht,
+#   ist darüber nicht erreichbar (Kette eingang), nur ein Socket, der genau an diese Adresse
+#   gebunden ist.
+# Alles andere weist die Regel ab und zählt es (Zähler abgewiesen): eigene Adressen, private und
+# besondere Netze, Multicast und Broadcast, jeder andere Port und jedes andere Protokoll. Andere
+# Benutzer betrifft sie nicht.
+#
+# Grenze: Was der Router des Netzes auf Port 443 seiner öffentlichen Adresse anbietet oder
+# weiterleitet, oft auch seine eigene Weboberfläche (NAT-Loopback), erreicht lf-claude weiter. Die
+# öffentliche Adresse ist auf diesem Rechner nicht bekannt, eine Regel nach Adresse sieht sie nicht.
+#
+# Geladen von lf-claude-netz-sperre.service beim Start, bevor das Netz kommt. Claude startet nur,
+# wenn genau diese Regel geladen ist (claude_netz_regel in claude.sh). Erneutes Laden ersetzt die
+# Tabelle. Den Zähler liest selftest_netz_claude. Die Kette ausgang läuft nach der aus
+# lf-claude-ssh.nft (priority filter + 10): Port 22 an eigene Adressen weist zuerst jene Regel ab
+# und zählt es dort.
+table inet lf_claude_netz
+delete table inet lf_claude_netz
+table inet lf_claude_netz {
+	counter abgewiesen {
+	}
+
+	# Private und besondere Netze (IANA Special-Purpose Address Registry), dazu Multicast und die
+	# reservierten Bereiche. Keines davon ist ein Ziel im Internet.
+	set privat4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24, 192.168.0.0/16, 198.18.0.0/15,
+			198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4 }
+	}
+
+	# Dasselbe für IPv6, dazu die Bereiche, die eine IPv4-Adresse einbetten (IPv4-kompatibel, NAT64,
+	# 6to4, Teredo): Über sie käme eine Verbindung sonst an ein privates IPv4-Ziel. ::/96 enthält auch
+	# :: und ::1.
+	set privat6 {
+		type ipv6_addr
+		flags interval
+		elements = { ::/96, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/23,
+			2001:db8::/32, 2002::/16, 3fff::/20, fc00::/7, fe80::/10, fec0::/10, ff00::/8 }
+	}
+
+	chain ausgang {
+		type filter hook output priority filter + 10; policy accept;
+		meta skuid "lf-claude" jump claude
+	}
+
+	chain claude {
+		# Als Gegenstelle antwortet lf-claude nur einem Client auf diesem Rechner, und nur über
+		# 127.76.70.1 (die Attrappe von lf-claude-check). So erreicht auch kein Rechner im Netz
+		# einen Dienst, den lf-claude öffnet.
+		ct direction reply ip saddr 127.76.70.1 tcp sport 1024-65535 accept
+		ct direction reply goto abweisen
+		ip daddr 127.0.0.53 udp dport 53 accept
+		ip daddr 127.0.0.53 tcp dport 53 accept
+		ip daddr 127.76.70.1 tcp dport 1024-65535 accept
+		fib daddr type { local, broadcast, anycast, multicast } goto abweisen
+		ip daddr @privat4 goto abweisen
+		ip6 daddr @privat6 goto abweisen
+		tcp dport 443 accept
+		goto abweisen
+	}
+
+	# Abgewiesen wird sofort: TCP mit Reset, alles andere mit ICMP (Zugriff verboten).
+	chain abweisen {
+		counter name "abgewiesen"
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+
+	# Über 127.76.70.1 nur Sockets, die genau an diese Adresse gebunden sind. Ein Dienst, der auf
+	# allen Adressen lauscht (0.0.0.0 oder ::), nähme die Verbindung sonst auch dort an.
+	chain eingang {
+		type filter hook input priority filter + 10; policy accept;
+		ip daddr 127.76.70.1 socket wildcard 1 goto abweisen
+	}
+}

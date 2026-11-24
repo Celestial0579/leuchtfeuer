@@ -47,6 +47,8 @@ jobs:
       # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
       # P2V: Der Schlüssel des Knotens gilt erst nach 10 Zeichen seines Fingerabdrucks. lf-claude nie per SSH.
       # SSH lokal: lf-claude erreicht sshd auf diesem Rechner nicht (nftables). Echt prüft es selftest_ssh_lokal.
+      # Netz für Claude: lf-claude erreicht nur HTTPS im Internet und DNS, keinen Dienst auf diesem Rechner und
+      # keinen Rechner im lokalen Netz (nftables), Claude startet nur mit der Regel. Echt prüft es selftest_netz_claude.
       # Quellen: keine Disk, auf die gerade ein Job schreibt, kein nbd oder zram.
       # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # BitLocker: Der Wiederherstellungsschlüssel geht nur an dislocker, nie in Protokoll, Fall oder Claude.
@@ -121,6 +123,7 @@ jobs:
           bash tests/unit-source-busy.sh
           bash tests/unit-p2v.sh
           bash tests/unit-ssh-lokal.sh
+          bash tests/unit-netz-claude.sh
           bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-netz.sh
           bash tests/unit-ssh-aus.sh

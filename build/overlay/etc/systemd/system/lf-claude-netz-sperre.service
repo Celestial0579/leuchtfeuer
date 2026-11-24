@@ -1,0 +1,22 @@
+[Unit]
+# GHSA-w376-95wf-5v9q: lf-claude erreicht nur HTTPS im Internet und die Namensauflösung, keinen
+# Dienst auf diesem Rechner und keinen Rechner im lokalen Netz. Sonst käme ein Prozess von
+# lf-claude über einen anderen Rechner im Netz auch an sshd auf diesem Rechner, an der Regel aus
+# lf-claude-ssh.nft vorbei. Die Regel aus lf-claude-netz.nft gilt ab dem Start, bevor das Netz
+# kommt. Claude startet nur, wenn genau sie geladen ist (claude_netz_regel in claude.sh).
+Description=Leuchtfeuer: lf-claude erreicht nur HTTPS im Internet und DNS
+# Ohne die Standard-Abhängigkeiten, wie lf-claude-ssh-sperre.service. Nach nftables.service, falls
+# es jemand einschaltet: /etc/nftables.conf beginnt mit flush ruleset.
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/local/lib/lf/lf-claude-netz.nft
+
+[Install]
+WantedBy=multi-user.target
