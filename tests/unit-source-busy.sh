@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Unit-Test (GHSA-p86q-3456-f288): lf-aufgabe nimmt keine Quelle, auf die gerade ein Job schreibt
+# Unit-Test (GHSA-p86q-3456-f288, #91): lf-aufgabe nimmt keine Quelle, auf die gerade ein Job schreibt
 # (dd oder partclone eines laufenden Klons), und kein Hilfsgerät (nbd: Overlay eines Klons,
 # zram). Ein blockdev --setro darauf ließe den Job mitten im Lauf scheitern. Maßgeblich ist die
 # Jobliste des Assistenten, denn zwischen zwei Kopierschritten hat niemand die Ziel-Disk offen;
-# offene Schreibzugriffe und schreibbar eingehängte Dateisysteme fangen den Rest ab.
+# offene Schreibzugriffe und schreibbar eingehängte Dateisysteme fangen den Rest ab. Für retten,
+# domain, fortsetzen und pruefen-rettung ist auch das Loop-Gerät einer Datei auf dem Ziel keine
+# Quelle, etwa des Images eines Rettungsfalls (rescue_source_ok, #91).
 #
 # Hier wird nichts eingehängt: Die "Disk" sind gewöhnliche Dateien, lsblk, disk_of, boot_disk,
 # target_disk und fail sind Attrappen. Ein losgelöster sleep hält eine Datei offen wie dd.
@@ -74,6 +76,59 @@ printf '%s rw,relatime\n' "$T/sdz1" >"$T/mounts"
 check "eine schreibbar eingehängte Partition: abgelehnt" '[[ $( (source_ok "$T/sdz"); echo "rc=$?") == *"schreibbar eingehängt"*"rc=2" ]]'
 printf '%s ro,nosuid,nodev,noexec\n' "$T/sdz1" >"$T/mounts"
 check "nur lesend eingehängt (etwa von lf-aufgabe selbst): weiter Quelle" '[[ $( (source_ok "$T/sdz"); echo "rc=$?") == "rc=0" ]]'
+
+echo "Loop-Gerät einer Datei auf dem Ziel (#91):"
+# aktionen FN   Die Aktionen von lf-aufgabe, deren Zweig FN aufruft, sortiert.
+aktionen() { awk -v fn="$1" '/^[a-z-]+\)$/ { a = substr($0, 1, length($0) - 1) } $1 == fn && a != "" { print a }' rescue/bin/lf-aufgabe | sort | tr '\n' ' '; }
+check "retten, domain, fortsetzen und pruefen-rettung prüfen das, einhaengen und timeout nicht (Partitionen eines Images)" '[[ $(aktionen rescue_source_ok) == "domain fortsetzen pruefen-rettung retten " && $(aktionen source_ok) == "einhaengen timeout " ]]'
+check "der Selbsttest bindet die Images zweier Fälle ein und prüft das" 'grep -qF "lehnen das Loop-Gerät des Images eines Falls ab, auch als Partition" rescue/lf'
+# rescue_source_ok aus lf-aufgabe. Attrappen: source_ok lässt alles durch (oben geprüft), disk_of
+# kennt die Partitionen von Loop-Geräten, losetup antwortet aus $T/loop-NAME ("MAJ:MIN|DATEI") und
+# schreibt jeden Aufruf mit, stat nennt für das Ziel $ZIEL_MM.
+sed -n '/^rescue_source_ok() {/,/^}/p' rescue/bin/lf-aufgabe >"$T/rescue-fn.sh"
+# shellcheck disable=SC1091
+. "$T/rescue-fn.sh"
+LF_TARGET_MNT=/mnt/lf-target
+ZIEL_MM=0:47
+source_ok() { :; }
+disk_of() { if [[ $1 =~ ^(/dev/loop[0-9]+)p[0-9]+$ ]]; then echo "${BASH_REMATCH[1]}"; else echo "$1"; fi; }
+losetup() {
+	local mm f
+	echo "losetup $*" >>"$T/losetup-aufrufe"
+	[[ $# == 4 && $1 == -n && $2 == -O && -f $T/loop-${4##*/} ]] || return 1
+	IFS='|' read -r mm f <"$T/loop-${4##*/}"
+	case $3 in
+	BACK-MAJ:MIN) printf '%s\n' "$mm" ;;
+	BACK-FILE) printf '%s\n' "$f" ;;
+	*) return 1 ;;
+	esac
+}
+stat() { [[ $# == 3 && $1 == -c && $2 == %Hd:%Ld && $3 == "$LF_TARGET_MNT" ]] && echo "$ZIEL_MM"; }
+# quelle GERÄT   Was rescue_source_ok sagt, dahinter rc=…
+quelle() { (rescue_source_ok "$1") 2>&1; echo "rc=$?"; }
+NEIN="ist das Loop-Gerät einer Datei auf dem Ziel"
+UNKLAR="lässt sich nicht prüfen. Keine Quelle."
+echo "0:47|/mnt/lf-target/LF/20261123-1200_Disk_x/image.img" >"$T/loop-loop5"
+check "das Image eines Falls (lf-aufgabe image): abgelehnt" '[[ $(quelle /dev/loop5) == *"$NEIN"*"rc=2" ]]'
+check "eine Partition davon: abgelehnt, geprüft wird das Loop-Gerät dazu" ': >"$T/losetup-aufrufe"; [[ $(quelle /dev/loop5p1) == *"$NEIN"*"rc=2" ]] && grep -qx "losetup -n -O BACK-FILE /dev/loop5" "$T/losetup-aufrufe"'
+echo "0:47|/mnt/lf-target/LF/20261123-1200_Disk_x/image.img (deleted)" >"$T/loop-loop5"
+check "das Image ist inzwischen gelöscht (deleted): abgelehnt" '[[ $(quelle /dev/loop5) == *"$NEIN"*"rc=2" ]]'
+echo "0:52|/mnt/lf-target/LF/20261123-1200_Disk_x/image.img" >"$T/loop-loop5"
+check "Pfad unter dem Ziel, andere Gerätenummer (verschachteltes Subvolume von btrfs): abgelehnt" '[[ $(quelle /dev/loop5) == *"$NEIN"*"rc=2" ]]'
+echo "  0:47 |/mnt/anderswo/LF/20261123-1200_Disk_x/image.img" >"$T/loop-loop5"
+check "Gerätenummer des Ziels (mit Leerzeichen), anderer Einhängepunkt: abgelehnt" '[[ $(quelle /dev/loop5) == *"$NEIN"*"rc=2" ]]'
+echo "0:25|/run/lf/selftest/retten.raw" >"$T/loop-loop6"
+check "Loop-Gerät des Selbsttests (Datei unter /run): weiter Quelle, auch als Partition (--domain)" '[[ $(quelle /dev/loop6) == "rc=0" && $(quelle /dev/loop6p1) == "rc=0" ]]'
+echo "0:48|/mnt/lf-target2/x.img" >"$T/loop-loop6"
+check "ein Pfad, der nur mit dem Namen des Ziels anfängt: weiter Quelle" '[[ $(quelle /dev/loop6) == "rc=0" ]]'
+check "ein Loop-Gerät, zu dem losetup nichts sagt: abgelehnt" '[[ $(quelle /dev/loop7) == *"$UNKLAR"*"rc=2" ]]'
+echo "|/run/lf/selftest/retten.raw" >"$T/loop-loop7"
+check "ohne Gerätenummer der Datei: abgelehnt" '[[ $(quelle /dev/loop7) == *"$UNKLAR"*"rc=2" ]]'
+echo "0:25|" >"$T/loop-loop7"
+check "ohne Pfad der Datei: abgelehnt" '[[ $(quelle /dev/loop7) == *"$UNKLAR"*"rc=2" ]]'
+ZIEL_MM=""
+check "ohne Gerätenummer des Ziels: abgelehnt" '[[ $(quelle /dev/loop6) == *"$UNKLAR"*"rc=2" ]]'
+check "eine Disk, die kein Loop-Gerät ist: weiter Quelle, ohne losetup" ': >"$T/losetup-aufrufe"; [[ $(quelle /dev/sdz) == "rc=0" && ! -s $T/losetup-aufrufe ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

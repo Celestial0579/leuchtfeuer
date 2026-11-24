@@ -53,7 +53,8 @@ root darfst du nur die lf-Werkzeuge starten. Mit ihnen erledigst du die Rettungs
   `--haengt` im Modus hängende Disk (Skill `lf-haengende-disk`).
   `sudo lf-aufgabe domain FALL PARTITION` legt die Domain für einen Fall an, der noch nicht über
   Phase 1 hinaus ist. `sudo lf-aufgabe fortsetzen FALL GERÄT [--haengt]` setzt eine unterbrochene
-  Rettung fort, mit `--haengt` ab jetzt im Modus hängende Disk.
+  Rettung fort, mit `--haengt` ab jetzt im Modus hängende Disk. Das Loop-Gerät des Images eines
+  Falls ist dafür keine Quelle: Das Image ist schon die Kopie der Disk.
 - `sudo lf-aufgabe pruefen PFAD [ORDNER]`: die Kopie per Prüfsumme gegen die Quelle prüfen
 - `sudo lf-aufgabe timeout GERÄT SEKUNDEN`: kurze Timeouts für eine schreibgeschützte Quelle
 - `sudo lf-aufgabe ablegen FALL DATEI`: eine Textdatei aus deinem Home (etwa einen Bericht) in den
