@@ -36,7 +36,7 @@ desktop_schluessel() {
 	if gpg --homedir "$kh" --batch --quiet --no-autostart --import "$1" &&
 		gpg --homedir "$kh" --batch --no-autostart --armor --export "$CLAUDE_DESKTOP_FPR" >"$2" &&
 		[[ -s $2 ]]; then
-		fpr="$(gpg --homedir "$kh" --batch --no-autostart --show-keys --with-colons "$2" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')"
+		fpr="$(gpg --homedir "$kh" --batch --no-autostart --show-keys --with-colons "$2" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')" || fpr=""
 	fi
 	rm -rf "$kh"
 	[[ $fpr == "$CLAUDE_DESKTOP_FPR" ]]
