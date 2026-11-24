@@ -83,8 +83,9 @@ kommentar() {
 }
 
 # melden FASSUNG SUMME BUILD FPR   Legt ein Issue an oder ergänzt das offene. Als offen zählt nur
-#   ein Issue mit dem Titel TITEL, das der Workflow selbst angelegt hat. Nennt es den sha256 schon
-#   (im Text oder in einem Kommentar), schreibt es nichts.
+#   ein Issue mit dem Titel TITEL, das der Workflow selbst angelegt hat. Nennt es den sha256 schon,
+#   im Text oder in einem Kommentar des Workflows, schreibt es nichts. Kommentare anderer zählen
+#   nicht: Sonst könnte jeder eine Meldung unterdrücken.
 melden() {
 	local repo=${GITHUB_REPOSITORY:-} nr alt
 	[[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fehler "GITHUB_REPOSITORY fehlt"
@@ -94,7 +95,8 @@ melden() {
 	nr=${nr%%$'\n'*}
 	if [[ -n $nr ]]; then
 		[[ $nr =~ ^[0-9]+$ ]] || fehler "Unerwartete Antwort beim Lesen der offenen Issues"
-		alt=$(gh api "repos/$repo/issues/$nr" --jq .body && gh api "repos/$repo/issues/$nr/comments?per_page=100" --jq '.[].body') ||
+		alt=$(gh api "repos/$repo/issues/$nr" --jq .body &&
+			gh api --paginate "repos/$repo/issues/$nr/comments?per_page=100" --jq ".[] | select(.user.login == \"$BOT\") | .body") ||
 			fehler "Das offene Issue #$nr ließ sich nicht lesen"
 		if grep -qF -- "$2" <<<"$alt"; then
 			echo "schon gemeldet in #$nr"

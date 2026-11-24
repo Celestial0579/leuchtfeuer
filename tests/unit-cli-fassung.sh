@@ -13,7 +13,7 @@
 #   - nur wenn Fassung und sha256 im Manifest das Format haben und zur stabilen Fassung passen,
 #   - Werte vom Hersteller erscheinen erst nach der Prüfung in einer Ausgabe,
 #   - ein Issue entsteht nur einmal, das offene wird ergänzt, ein schon gemeldeter sha256 nie
-#     ein zweites Mal.
+#     ein zweites Mal; als gemeldet zählen nur Text und Kommentare des Workflows.
 # Echt prüft es der Workflow claude-cli.yml gegen den Hersteller.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -233,9 +233,12 @@ printf '%s\n' '{"number":7,"body":"Fassung `2.1.335`"}' >"$T/gh/issue-7.json"
 printf '%s\n' '[]' >"$T/gh/kommentare-7.json"
 lauf --issue
 check "offenes Issue des Workflows: wird ergänzt, kein zweites" '((RC == 0)) && [[ -s $T/gh/kommentar-7.md && ! -e $T/gh/erstellt.md ]] && grep -qF "\`$SUMME\`" "$T/gh/kommentar-7.md"'
-printf '%s\n' "[{\"body\":\"Neuere stabile Fassung: \`2.1.340\`, sha256 für linux-x64 \`$SUMME\`\"}]" >"$T/gh/kommentare-7.json"
+printf '%s\n' "[{\"user\":{\"login\":\"jemand\"},\"body\":\"Neuere stabile Fassung: \`2.1.340\`, sha256 für linux-x64 \`$SUMME\`\"}]" >"$T/gh/kommentare-7.json"
 lauf --issue
-check "der sha256 steht schon im Issue: nichts geschrieben" '((RC == 0)) && grep -qx "schon gemeldet in #7" "$T/out" && nichts_geschrieben'
+check "der sha256 nur in einem Kommentar von jemand anderem: zählt nicht, das Issue wird ergänzt" '((RC == 0)) && [[ -s $T/gh/kommentar-7.md ]] && ! grep -q "schon gemeldet" "$T/out"'
+printf '%s\n' "[{\"user\":{\"login\":\"github-actions[bot]\"},\"body\":\"Neuere stabile Fassung: \`2.1.340\`, sha256 für linux-x64 \`$SUMME\`\"}]" >"$T/gh/kommentare-7.json"
+lauf --issue
+check "der sha256 steht schon in einem Kommentar des Workflows: nichts geschrieben" '((RC == 0)) && grep -qx "schon gemeldet in #7" "$T/out" && nichts_geschrieben'
 offen '[{"number":3,"title":"Build: neue Fassung der Claude Code CLI","user":{"login":"jemand"},"body":""},{"number":4,"title":"etwas anderes","user":{"login":"github-actions[bot]"},"body":""},{"number":5,"title":"Build: neue Fassung der Claude Code CLI","user":{"login":"github-actions[bot]"},"pull_request":{},"body":""}]'
 lauf --issue
 check "gleicher Titel von jemand anderem, anderer Titel, ein PR: zählen nicht, ein neues Issue" '((RC == 0)) && [[ -s $T/gh/erstellt.md ]] && ! compgen -G "$T/gh/kommentar-*.md" >/dev/null'

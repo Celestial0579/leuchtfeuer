@@ -26,8 +26,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # jq und gpg bringt das Runner-Image mit. Nachinstalliert wird nur, was fehlt, damit ein
+      # Aussetzer des Paketarchivs den Lauf nicht rot macht.
       - name: Werkzeuge
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq gnupg
+        run: command -v jq >/dev/null && command -v gpg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq gnupg; }
       - name: Neuere stabile Fassung beim Hersteller?
         env:
           GH_TOKEN: ${{ github.token }}
