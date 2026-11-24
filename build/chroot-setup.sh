@@ -23,6 +23,23 @@ claude_cli_laden() {
 	printf '%s  %s\n' "$CLAUDE_CLI_SHA256" "$1" | sha256sum -c --status
 }
 
+# desktop_schluessel DATEI ZIEL   Schreibt aus der heruntergeladenen Schlüsseldatei DATEI nur den
+#   Schlüssel mit CLAUDE_DESKTOP_FPR samt seinen Unterschlüsseln nach ZIEL. apt vertraut jedem
+#   Schlüssel in der Datei hinter signed-by. Der Export allein reicht dafür nicht: Status ungleich 0,
+#   wenn ZIEL danach nicht genau einen Hauptschlüssel hat, und zwar diesen. gpg arbeitet nur in
+#   einem eigenen, leeren Verzeichnis, nie in dem von root.
+desktop_schluessel() {
+	local kh fpr=""
+	kh="$(mktemp -d)" || return 1
+	if gpg --homedir "$kh" --batch --quiet --no-autostart --import "$1" &&
+		gpg --homedir "$kh" --batch --no-autostart --armor --export "$CLAUDE_DESKTOP_FPR" >"$2" &&
+		[[ -s $2 ]]; then
+		fpr="$(gpg --homedir "$kh" --batch --no-autostart --show-keys --with-colons "$2" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')"
+	fi
+	rm -rf "$kh"
+	[[ $fpr == "$CLAUDE_DESKTOP_FPR" ]]
+}
+
 # Kein Dienststart im chroot
 cat >/usr/sbin/policy-rc.d <<'EOF'
 #!/bin/sh
@@ -48,12 +65,14 @@ done
 
 log "Claude Desktop aus dem offiziellen Anthropic-Repo"
 key=/usr/share/keyrings/claude-desktop-archive-keyring.asc
-curl -fsSL -o "$key" https://downloads.claude.ai/claude-desktop/key.asc
-fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '/^fpr:/ {print $10; exit}')"
-if [[ $fpr != "$CLAUDE_DESKTOP_FPR" ]]; then
-	echo "FEHLER: Claude-Desktop-Schlüssel hat Fingerprint '$fpr', erwartet $CLAUDE_DESKTOP_FPR" >&2
+roh="$(mktemp)"
+curl -fsSL -o "$roh" https://downloads.claude.ai/claude-desktop/key.asc
+if ! desktop_schluessel "$roh" "$key"; then
+	echo "FEHLER: Im Claude-Desktop-Schlüssel steht nicht genau der Hauptschlüssel $CLAUDE_DESKTOP_FPR" >&2
+	rm -f "$roh" "$key"
 	exit 1
 fi
+rm -f "$roh"
 echo "deb [arch=amd64 signed-by=$key] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
 	>/etc/apt/sources.list.d/claude-desktop.list
 apt-get update -qq
