@@ -56,7 +56,11 @@ curl -fsSL -o "$roh" https://downloads.claude.ai/claude-desktop/key.asc
 gpg --homedir "$kh" --batch --quiet --no-autostart --import "$roh"
 gpg --homedir "$kh" --batch --no-autostart --armor --export "$CLAUDE_DESKTOP_FPR" >"$key"
 rm -rf "$kh" "$roh"
-fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')"
+# Ohne den festgelegten Schlüssel im Download bleibt die Datei leer, dann gibt es nichts zu zeigen.
+fpr=""
+if [[ -s $key ]]; then
+	fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')"
+fi
 if [[ $fpr != "$CLAUDE_DESKTOP_FPR" ]]; then
 	echo "FEHLER: Im Claude-Desktop-Schlüssel steht nicht genau der Hauptschlüssel $CLAUDE_DESKTOP_FPR" >&2
 	exit 1
