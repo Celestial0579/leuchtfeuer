@@ -36,7 +36,7 @@ jobs:
           # Die Libs werden gemeinsam geladen, Variablen aus anderen Dateien (SC2034) sind kein Fehler.
           # /run/lf gehört dem Benutzer rescue, Umleitungen hinter sudo (SC2024) sind dort gewollt.
           shellcheck -x -s bash --severity=warning -e SC2016,SC2024,SC2029,SC2034 \
-            build/build.sh build/chroot-setup.sh rescue/lf rescue/bin/* rescue/lib/*.sh tests/*.sh
+            build/build.sh build/chroot-setup.sh build/cli-fassung.sh rescue/lf rescue/bin/* rescue/lib/*.sh tests/*.sh
       # Präparierte Falldateien: Nichts daraus darf ausgeführt werden.
       # Expertenwerkzeuge: kein Start ohne Ziel-Bestätigung.
       # Fortsetzen: Die Quelle wählt der Techniker, nie die Falldatei.
@@ -79,6 +79,7 @@ jobs:
       # ptrace: ab dem Start gesperrt, auch für root (kernel.yama.ptrace_scope=3). Echt prüft es selftest_ptrace.
       # kexec: ab dem Start gesperrt, auch für root (kernel.kexec_load_disabled=1). Echt prüft es selftest_kexec.
       # Build: Basis-Image per Digest, Claude Code CLI in fester Fassung mit sha256, Runner ubuntu-26.04.
+      # CLI-Fassung: Neue Fassungen meldet claude-cli.yml, nur aus einem Manifest mit gültiger Signatur (#136).
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue gdisk xorriso mtools dosfstools openssh-server
@@ -127,6 +128,7 @@ jobs:
           bash tests/unit-image-release.sh
           bash tests/unit-passwort-sperre.sh
           bash tests/unit-build-fest.sh
+          bash tests/unit-cli-fassung.sh
       # Job-Fenster mit echtem tmux in einem Pseudo-Terminal.
       - name: Unit-Tests
         run: |

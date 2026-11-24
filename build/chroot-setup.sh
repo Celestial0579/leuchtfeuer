@@ -7,6 +7,8 @@ log() { printf '\033[1;33m  ->\033[0m %s\n' "$*"; }
 
 # Fingerprint des Anthropic-Signaturschlüssels für das Claude-Desktop-Repo
 # (laut https://code.claude.com/docs/en/desktop-linux).
+# Derselbe Schlüssel signiert das Manifest der Claude Code CLI (manifest.json.sig). Damit prüft
+# build/cli-fassung.sh neue Fassungen, bevor es sie meldet (#136).
 CLAUDE_DESKTOP_FPR="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 
 # Claude Code CLI in fester Fassung: die Datei für linux-x64 und ihr sha256 laut Manifest des
