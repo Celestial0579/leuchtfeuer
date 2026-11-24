@@ -958,7 +958,7 @@ selftest_p2v() {
 	sum1=$(sha256sum <"$loop")
 
 	P2V_HOST=127.0.0.1 P2V_PORT=2222 P2V_USER=root P2V_TEST_IDENTITY="$k/client"
-	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_RDIR="" P2V_SSH=() P2V_NODE=""
+	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_FMTS=() P2V_RDIR="" P2V_SSH=() P2V_NODE=""
 	if ! p2v_hostkey_scan || [[ $P2V_FP != "$(ssh-keygen -l -E sha256 -f "$k/hostkey.pub" | awk '{print $2}')" ]]; then
 		echo "LF-SELFTEST: P2V: Schlüssel der Attrappe nicht oder falsch gelesen ($P2V_FP)"
 		good=0
