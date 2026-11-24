@@ -145,6 +145,32 @@ source_ok() {
 	return 0
 }
 
+# rescue_source_ok GERÄT   source_ok, für retten, domain, fortsetzen und pruefen-rettung dazu (#91):
+#   kein Loop-Gerät einer Datei auf dem Ziel, etwa des Images eines Rettungsfalls (lf-aufgabe image).
+#   Das Image ist schon die Kopie der Disk. lf-rescue-run öffnet die Quelle in jeder Phase neu, und
+#   ein Loop-Gerät hat weder Seriennummer noch WWN: Bekäme ein anderes Image dieselbe Nummer, läse
+#   die nächste Phase dieses Image in den Fall. Bei einer Partition (/dev/loopNpM) zählt das
+#   Loop-Gerät dazu. einhaengen nimmt solche Geräte weiter an (Partitionen eines Images), und die
+#   Loop-Geräte des Selbsttests bleiben Quelle: Ihre Dateien liegen unter /run.
+rescue_source_ok() {
+	local d mm f t
+	source_ok "$1"
+	d=$(disk_of "$1")
+	[[ $d == /dev/loop* ]] || return 0
+	mm=$(losetup -n -O BACK-MAJ:MIN "$d" 2>/dev/null)
+	mm=${mm//[[:space:]]/}
+	f=$(losetup -n -O BACK-FILE "$d" 2>/dev/null)
+	t=$(stat -c %Hd:%Ld "$LF_TARGET_MNT" 2>/dev/null)
+	[[ -n $mm && -n $f && -n $t ]] || fail "$1: Ob die Datei hinter $d auf dem Ziel liegt, lässt sich nicht prüfen. Keine Quelle."
+	# Abgelehnt, wenn die Datei auf dem Gerät des Ziels liegt (auch unter einem anderen
+	# Einhängepunkt) oder ihr Pfad unter dem Ziel (auch in einem verschachtelten Subvolume von btrfs,
+	# das eine eigene Gerätenummer hat). Der Vergleich des Anfangs übersteht ein " (deleted)" am Ende.
+	if [[ $mm == "$t" || $f == "$LF_TARGET_MNT"/* ]]; then
+		fail "$1 ist das Loop-Gerät einer Datei auf dem Ziel ($f), etwa des Images eines Rettungsfalls. Das Image ist schon die Kopie der Disk, keine Quelle."
+	fi
+	return 0
+}
+
 # case_dir FALL   Ordner eines Rettungsfalls auf dem Ziel.
 case_dir() {
 	casefile_dirname_ok "${1:-}" || fail "kein gültiger Fallname: '${1:-}'"
@@ -341,7 +367,7 @@ retten)
 		[[ $(disk_of "$dpart") == "$sdev" && $dpart != "$sdev" ]] || fail "$dpart ist keine Partition von $sdev."
 	fi
 	[[ $(lsblk -dno TYPE "$sdev") == disk || $sdev == /dev/loop* ]] || fail "$sdev ist keine ganze Disk."
-	source_ok "$sdev"
+	rescue_source_ok "$sdev"
 	sj=$(lsblk -J -b -d -o PATH,SIZE,MODEL,SERIAL,WWN "$sdev" 2>/dev/null |
 		jq -c '.blockdevices[0] // empty | .serial = ((.serial // "") | gsub("^\\s+|\\s+$"; ""))')
 	[[ -n $sj ]] || fail "$sdev meldet keine Angaben."
@@ -378,7 +404,7 @@ domain)
 	c=$(case_dir "$1") || exit 2
 	part=$(dev "$2") || exit 2
 	disk=$(disk_of "$part")
-	source_ok "$disk"
+	rescue_source_ok "$disk"
 	casefile_load "$c/case.env" || fail "Die Falldatei ist ungültig."
 	[[ $(casefile_get PHASE_DONE 0) == 0 ]] || fail "Der Fall ist schon über Phase 1 hinaus. Eine Domain spart dann nichts mehr."
 	# Die Disk muss die Quelle dieses Falls sein, geprüft wie in lf-rescue-run.
@@ -394,7 +420,7 @@ fortsetzen)
 	target_ok
 	c=$(case_dir "$1") || exit 2
 	sdev=$(dev "$2") || exit 2
-	source_ok "$sdev"
+	rescue_source_ok "$sdev"
 	safety_set_ro "$sdev"
 	if (($# == 3)); then
 		casefile_load "$c/case.env" || fail "Die Falldatei ist ungültig: $CASEFILE_ERROR"
@@ -408,14 +434,15 @@ fortsetzen)
 	;;
 pruefen-rettung)
 	# Dieselben Prüfungen wie retten und fortsetzen vor start_rescue: ein bestätigtes Ziel, ein
-	# Fallordner darauf, ein Blockgerät als Quelle, nicht der Stick und nicht das Ziel.
+	# Fallordner darauf, ein Blockgerät als Quelle, nicht der Stick, nicht das Ziel und kein
+	# Loop-Gerät einer Datei darauf (rescue_source_ok).
 	(($# == 2)) || fail "pruefen-rettung erwartet FALLORDNER GERÄT"
 	target_ok
 	[[ $1 == "$LF_TARGET_MNT/LF/"?* ]] || fail "kein Fallordner auf dem Ziel: $1"
 	c=$(case_dir "${1#"$LF_TARGET_MNT/LF/"}") || exit 2
 	[[ $c == "$1" ]] || fail "kein Fallordner auf dem Ziel: $1"
 	sdev=$(dev "$2") || exit 2
-	source_ok "$sdev"
+	rescue_source_ok "$sdev"
 	;;
 stand)
 	(($# == 0)) || fail "stand erwartet keine Argumente"

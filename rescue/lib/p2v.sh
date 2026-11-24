@@ -64,8 +64,10 @@ p2v_ok() {
 }
 
 # p2v_text TEXT   Text vom Quellrechner (DMI) für die Beschreibung der VM: nur harmlose Zeichen.
+#   Umlaute und ß schreibt es vorher um (ä → ae), statt sie wegzulassen (#101).
 p2v_text() {
 	local LC_ALL=C s=$1
+	s=${s//ä/ae} s=${s//ö/oe} s=${s//ü/ue} s=${s//Ä/Ae} s=${s//Ö/Oe} s=${s//Ü/Ue} s=${s//ß/ss}
 	s=${s//[^A-Za-z0-9 ._-]/}
 	s=${s#"${s%%[! ]*}"}
 	printf '%s' "${s:0:60}"
@@ -167,6 +169,20 @@ p2v_bridges() {
 # p2v_vmid_free VMID
 p2v_vmid_free() { p2v_ok vmid "$1" && p2v_r pvesh get /cluster/nextid --vmid "$1" >/dev/null; }
 
+# p2v_vmid_vorschlag   Die VM-ID, die der Assistent vorschlägt: die aus einem früheren Durchgang,
+#   solange sie frei ist, sonst die nächste freie laut Knoten (/cluster/nextid). Nach einem Umzug
+#   ist die alte vergeben (#101). Leer, wenn der Knoten keine gültige nennt.
+p2v_vmid_vorschlag() {
+	local next
+	if [[ -n ${P2V_VMID:-} ]] && p2v_vmid_free "$P2V_VMID"; then
+		echo "$P2V_VMID"
+		return 0
+	fi
+	next=$(p2v_r pvesh get /cluster/nextid | tr -d '"[:space:]')
+	p2v_ok vmid "$next" && echo "$next"
+	return 0
+}
+
 p2v_logout() {
 	((${#P2V_SSH[@]})) && "${P2V_SSH[@]}" -O exit "$P2V_HOST" >/dev/null 2>&1
 	P2V_SSH=()
@@ -190,11 +206,13 @@ p2v_check_all() {
 
 # p2v_create   Legt die VM und je Quell-Disk ein Volume an. Setzt P2V_VOLS.
 p2v_create() {
-	local net="e1000e,bridge=$P2V_BRIDGE" desc i mib vol name fmt=() qfmt="" out boot=sata0
+	local net="e1000e,bridge=$P2V_BRIDGE" desc serial i mib vol name fmt=() qfmt="" out boot=sata0
 	P2V_VOLS=()
 	p2v_check_all || { log "P2V: Werte ungültig, keine VM angelegt"; return 1; }
 	[[ -n $P2V_VLAN ]] && net+=",tag=$P2V_VLAN"
-	desc="P2V vom $(date '+%d.%m.%Y %H:%M') mit Leuchtfeuer $LF_VERSION. Quelle: $(p2v_text "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) $(cat /sys/class/dmi/id/product_name 2>/dev/null)"), Seriennr. $(p2v_text "$(cat /sys/class/dmi/id/product_serial 2>/dev/null)")."
+	# Die Seriennummer darf nur root lesen (0400, #101). Fehlt sie, fehlt auch der Teil dafür.
+	serial=$(p2v_text "$(sudo cat /sys/class/dmi/id/product_serial 2>/dev/null)")
+	desc="P2V vom $(date '+%d.%m.%Y %H:%M') mit Leuchtfeuer $LF_VERSION. Quelle: $(p2v_text "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) $(cat /sys/class/dmi/id/product_name 2>/dev/null)")${serial:+, Seriennr. $serial}."
 	p2v_vmid_free "$P2V_VMID" || { log "P2V: VM-ID $P2V_VMID ist vergeben"; return 1; }
 	p2v_r qm create "$P2V_VMID" --name "$P2V_NAME" --memory "$P2V_MEM" --cores "$P2V_CORES" --sockets 1 \
 		--cpu "$P2V_CPU" --ostype "$P2V_OSTYPE" --machine q35 --scsihw virtio-scsi-single \
@@ -431,7 +449,7 @@ p2v_connect_step() {
 }
 
 p2v_vm_step() {
-	local lines items=() name typ free z next
+	local lines items=() name typ free z
 	lines=$(p2v_storages)
 	[[ -n $lines ]] || { die "Auf $P2V_NODE gibt es keinen aktiven Speicher für VM-Disks."; return 1; }
 	while read -r name typ free; do
@@ -446,10 +464,8 @@ p2v_vm_step() {
 		[[ " $P2V_STORAGE_THIN " == *" $P2V_STYP "* ]] && break
 		ui_yesno "Speicher" "Der Speicher $P2V_STOR ($P2V_STYP) ist nicht dünn: Die Disks belegen dort ihre volle Größe.\n\nTrotzdem diesen Speicher nehmen?" --defaultno && break
 	done
-	next=$(p2v_r pvesh get /cluster/nextid | tr -d '"[:space:]')
-	p2v_ok vmid "$next" || next=""
 	while true; do
-		P2V_VMID=$(ui_input "3/5 VM-ID" "VM-ID der neuen VM:" "${P2V_VMID:-$next}") || return 1
+		P2V_VMID=$(ui_input "3/5 VM-ID" "VM-ID der neuen VM:" "$(p2v_vmid_vorschlag)") || return 1
 		p2v_ok vmid "$P2V_VMID" || { ui_msg "VM-ID" "Die VM-ID ist eine Zahl ab 100."; continue; }
 		p2v_vmid_free "$P2V_VMID" && break
 		ui_msg "VM-ID" "Die VM-ID $P2V_VMID ist schon vergeben. Bestehende VMs fasst der Assistent nicht an."

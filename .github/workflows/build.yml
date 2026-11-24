@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
@@ -78,6 +78,7 @@ jobs:
       # LF-SSH im ISO: Partition 3 mit FAT und LIESMICH.txt, der MBR bleibt der von xorriso.
       # ptrace: ab dem Start gesperrt, auch für root (kernel.yama.ptrace_scope=3). Echt prüft es selftest_ptrace.
       # kexec: ab dem Start gesperrt, auch für root (kernel.kexec_load_disabled=1). Echt prüft es selftest_kexec.
+      # Build: Basis-Image per Digest, Claude Code CLI in fester Fassung mit sha256, Runner ubuntu-26.04.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue gdisk xorriso mtools dosfstools openssh-server
@@ -125,6 +126,7 @@ jobs:
           bash tests/unit-hang.sh
           bash tests/unit-image-release.sh
           bash tests/unit-passwort-sperre.sh
+          bash tests/unit-build-fest.sh
       # Job-Fenster mit echtem tmux in einem Pseudo-Terminal.
       - name: Unit-Tests
         run: |
@@ -138,7 +140,7 @@ jobs:
 
   build:
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -156,10 +158,16 @@ jobs:
           df -h /
       - name: ISO bauen (Ubuntu 26.04 Container)
         run: |
+          # Das Basis-Image steht per Digest in build/Dockerfile, Dependabot hält es aktuell.
+          img=$(sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]]*$/\1/p' build/Dockerfile)
+          if [[ ! $img =~ ^ubuntu:26\.04@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error file=build/Dockerfile::Basis-Image ohne Digest oder nicht genau eine FROM-Zeile: $img"
+            exit 1
+          fi
           docker run --rm --privileged \
             -v "$PWD:/src" -e LF_VERSION="${{ steps.ver.outputs.version }}" \
-            -e WORK=/tmp/lf-work -e OUT=/src/out \
-            ubuntu:26.04 /src/build/build.sh
+            -e WORK=/tmp/lf-work -e OUT=/src/out -e LF_BASIS_IMAGE="$img" \
+            "$img" /src/build/build.sh
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -171,7 +179,7 @@ jobs:
 
   test:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -199,7 +207,7 @@ jobs:
   release:
     needs: [build, test]
     if: github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') || inputs.release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       id-token: write
