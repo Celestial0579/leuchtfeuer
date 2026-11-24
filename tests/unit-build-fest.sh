@@ -61,6 +61,7 @@ check "geprüft werden alle Hauptschlüssel der Datei, nicht nur der erste" 'gre
 check "der Status der Prüfung ist der Vergleich mit dem festgelegten Fingerabdruck" '[[ $(tail -n 2 <<<"$FN_D" | head -n 1) == $'"'"'\t'"'"'"$FPR_CHECK" ]]'
 check "scheitert sie, bricht der Build ab" 'awk -v r="$RUF_DESKTOP" '"'"'$0 == r { an = 1 } an && $0 == "\texit 1" { ok = 1 } an && $0 == "fi" { an = 0 } END { exit !ok }'"'"' "$C"'
 check "apt nimmt genau diese Datei (signed-by)" 'grep -qF "signed-by=\$key]" "$C" && [[ $(grep -c "^key=" "$C") == 1 ]]'
+check "chroot-setup.sh läuft mit pipefail: Scheitert gpg, scheitert auch die Prüfung" 'grep -qx "set -Eeuo pipefail" "$C"'
 check "jeder Aufruf von gpg hat ein eigenes --homedir (kein /root/.gnupg in der ISO)" '! grep -vE "^[[:space:]]*#" "$C" | grep -E "(^|[[:space:]\"(])gpg[[:space:]]" | grep -qv -- "--homedir"'
 
 echo "Claude Code CLI:"
@@ -137,7 +138,8 @@ check "danach wieder die passende Datei: Status 0" '((RC == 0))'
 #     Hauptschlüssel zusammengeführt, und scheitert mit Status 2 an einer Datei ohne Schlüssel,
 #   --export FPR gibt jeden Schlüssel samt Unterschlüsseln aus, dessen Haupt- oder Unterschlüssel
 #     den Fingerabdruck FPR hat, sonst nichts, --export ohne FPR alle Schlüssel,
-#   --show-keys --with-colons zeigt je Hauptschlüssel pub und fpr, je Unterschlüssel sub und fpr.
+#   --show-keys --with-colons zeigt je Hauptschlüssel pub und fpr, je Unterschlüssel sub und fpr;
+#     mit GPG_SHOW_RC endet es danach mit diesem Status, wie gpg nach einem Fehler in der Datei.
 # Jeder Aufruf steht in $T/gpg.log.
 bloecke() {
 	awk '$1 == "haupt" && NF == 2 { if (b != "") print b; b = $2; next }
@@ -179,6 +181,7 @@ gpg() {
 		b=$(bloecke "$datei") || return 2
 		awk '{ print "pub:-:4096:1:" substr($1, 25) ":0:::-:::scESC::::::23::0:"; print "fpr:::::::::" $1 ":"
 			for (i = 2; i <= NF; i++) { print "sub:-:4096:1:" substr($i, 25) ":0::::::s::::::23:"; print "fpr:::::::::" $i ":" } }' <<<"$b"
+		return "${GPG_SHOW_RC:-0}"
 		;;
 	*) return 2 ;;
 	esac
@@ -186,10 +189,14 @@ gpg() {
 
 # datei ZEILE...   die Schlüsseldatei aus dem Download
 datei() { printf '%s\n' "$@" >"$T/roh"; }
-# probe   desktop_schluessel mit $T/roh nach $T/ziel; Status in RC, die Hauptschlüssel in ZIEL in HAUPT
+# probe   desktop_schluessel mit $T/roh nach $T/ziel, mit pipefail wie in chroot-setup.sh; Status in
+#   RC, die Hauptschlüssel in ZIEL in HAUPT
 probe() {
 	rm -f "$T/ziel" "$T/gpg.log"
-	desktop_schluessel "$T/roh" "$T/ziel" 2>>"$T/gpg.err"
+	(
+		set -o pipefail
+		desktop_schluessel "$T/roh" "$T/ziel"
+	) 2>>"$T/gpg.err"
 	RC=$?
 	HAUPT=$(awk '$1 == "haupt" { printf "%s ", $2 }' "$T/ziel" 2>/dev/null)
 }
@@ -231,6 +238,9 @@ else
 	: >"$T/roh"
 	probe
 	check "eine leere Datei: Status ungleich 0" '((RC != 0))'
+	datei "haupt $A"
+	GPG_SHOW_RC=2 probe
+	check "gpg --show-keys scheitert, nachdem es den festgelegten Schlüssel gezeigt hat: Status ungleich 0" '((RC != 0))'
 	unset -f gpg
 fi
 
