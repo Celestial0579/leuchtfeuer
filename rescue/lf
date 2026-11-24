@@ -83,6 +83,7 @@ selftest() {
 	selftest_lfssh /run/lf/selftest-lf-ssh || ok=0
 	selftest_ptrace || ok=0
 	selftest_kexec || ok=0
+	selftest_machine_id || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -737,6 +738,25 @@ selftest_kexec() {
 		return 1
 	fi
 	echo "LF-SELFTEST: kexec: gesperrt (kernel.kexec_load_disabled=1)"
+}
+
+# selftest_machine_id   Die Maschinen-ID entsteht bei jedem Start neu, und D-Bus nennt dieselbe
+#   (#144): /etc/machine-id ist gesetzt, /var/lib/dbus/machine-id ist ein Link darauf. Als eigene
+#   Datei aus dem Build hätten alle Starts derselben ISO dieselbe D-Bus-ID. LF_MACHINE_ID und
+#   LF_DBUS_MACHINE_ID nennen für Tests andere Dateien.
+selftest_machine_id() {
+	local etc=${LF_MACHINE_ID:-/etc/machine-id} dbus=${LF_DBUS_MACHINE_ID:-/var/lib/dbus/machine-id} id='' did=''
+	[[ -r $etc ]] && read -r id <"$etc"
+	[[ -r $dbus ]] && read -r did <"$dbus"
+	if [[ ! $id =~ ^[0-9a-f]{32}$ ]]; then
+		echo "LF-SELFTEST: Maschinen-ID: $etc ist leer oder keine ID"
+		return 1
+	fi
+	if [[ ! -L $dbus || $(readlink "$dbus") != "$etc" || $did != "$id" ]]; then
+		echo "LF-SELFTEST: Maschinen-ID: $dbus ist kein Link auf $etc"
+		return 1
+	fi
+	echo "LF-SELFTEST: Maschinen-ID: je Start neu, D-Bus nennt dieselbe"
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
