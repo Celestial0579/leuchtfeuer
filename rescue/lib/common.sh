@@ -408,19 +408,46 @@ tmux_size() {
 	fi
 }
 
-# tmux-Sitzung starten (falls nicht vorhanden) und anzeigen.
-# Die Arbeit läuft weiter, auch wenn man die Ansicht mit Strg+B, D verlässt.
+# tmux_run NAME BEFEHL …   Startet die Sitzung NAME und zeigt sie an. Die Arbeit läuft weiter, auch
+#   wenn man die Ansicht mit Strg+B, D verlässt. Gibt es die Sitzung schon, startet tmux_run
+#   nichts: Es sagt, dass dort noch ein Job offen ist, zeigt ihn an und endet mit 2 (#87). Lässt
+#   sich die Sitzung nicht starten, endet es mit 1.
 tmux_run() {
 	tmux_start "$@"
+	case $? in
+	0) ;;
+	2)
+		tmux_job_offen "$1"
+		return 2
+		;;
+	*) return 1 ;;
+	esac
 	tmux attach -t "$1" || true
 }
 
-# tmux_start NAME BEFEHL …   Startet die Sitzung NAME, falls es sie noch nicht gibt.
-#   Das Fenster ist so groß wie das Terminal, an das sich lf danach anhängt (tmux_size).
+# tmux_job_offen NAME   Sagt, dass im Fenster NAME noch ein Job offen ist, und zeigt es an.
+tmux_job_offen() {
+	log "Job $1: Das Fenster ist noch offen, nichts Neues gestartet"
+	ui_msg "Job noch offen" "Im Fenster $1 ist noch ein Job offen: Er läuft noch, oder er wartet auf Enter. Einen neuen startet Leuchtfeuer dort erst, wenn das Fenster zu ist.\n\nOK zeigt das Fenster an."
+	tmux attach -t "=$1" || true
+}
+
+# tmux_job_frei NAME   Endet mit 0, wenn das Fenster NAME zu ist. Ist es noch offen, sagt es das,
+#   zeigt das Fenster an und endet mit 1 (#87). Für Assistenten, die vor dem Start ihres Jobs
+#   fragen, schreiben oder etwas anlegen: Sie prüfen damit zuerst.
+tmux_job_frei() {
+	tmux has-session -t "=$1" 2>/dev/null || return 0
+	tmux_job_offen "$1"
+	return 1
+}
+
+# tmux_start NAME BEFEHL …   Startet die Sitzung NAME. Gibt es sie schon, startet es nichts und
+#   endet mit 2: Ein Job dort läuft noch oder wartet auf Enter (#87). Verglichen wird der ganze
+#   Name. Das Fenster ist so groß wie das Terminal, an das sich lf danach anhängt (tmux_size).
 tmux_start() {
 	local name=$1 size
 	shift
-	tmux has-session -t "$name" 2>/dev/null && return 0
+	tmux has-session -t "=$name" 2>/dev/null && return 2
 	size=$(tmux_size)
 	tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" "$@" || return 1
 	tmux set-option -t "$name" status-style "bg=colour4,fg=colour7" >/dev/null
@@ -445,11 +472,20 @@ LF_JOBS="$LF_RUN/jobs"
 LF_JOB_RUN=(sudo bash)
 
 # tmux_run_writing NAME DISK BEFEHL …   Wie tmux_run, für einen Job, der auf DISK schreibt.
-#   Der Eintrag gilt, solange der Prozess der Sitzung lebt.
+#   Der Eintrag gilt, solange der Prozess der Sitzung lebt. Einen Job, der schon offen war, trägt
+#   es nicht mit DISK ein (#87).
 tmux_run_writing() {
 	local name=$1 disk=$2
 	shift 2
-	tmux_start "$name" "$@" && job_register "$name" "$disk"
+	tmux_start "$name" "$@"
+	case $? in
+	0) job_register "$name" "$disk" ;;
+	2)
+		tmux_job_offen "$name"
+		return 2
+		;;
+	*) return 1 ;;
+	esac
 	tmux attach -t "$name" || true
 }
 

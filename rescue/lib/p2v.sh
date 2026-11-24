@@ -385,6 +385,8 @@ p2v_cleanup() {
 }
 
 p2v_wizard() {
+	# Ist das Fenster lf-p2v noch offen, läuft dort womöglich noch eine Kopie (#87).
+	tmux_job_frei lf-p2v || return 0
 	ui_msg "Umzug in eine Proxmox-VM" "Macht aus diesem Rechner eine VM auf einem Proxmox-VE-Knoten.\n\n 1. Netzwerk prüfen\n 2. Knoten wählen, seinen SSH-Schlüssel bestätigen, anmelden\n 3. Speicher und VM-Daten wählen\n 4. Quell-Disks wählen\n 5. VM anlegen und kopieren: nur belegte Bereiche, die Volumes bleiben dünn\n\nDie Disks dieses Rechners werden nur gelesen und sofort schreibgeschützt.\n\nVoraussetzungen:\n - Windows vollständig heruntergefahren (Schnellstart aus, kein Ruhezustand)\n - BitLocker angehalten oder entschlüsselt\n - SSH-Zugang als root zum Knoten"
 	install -d -m 700 "$P2V_DIR"
 	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_SRC=() P2V_SRC_ID=() P2V_RDIR="" P2V_SSH=()
@@ -601,6 +603,9 @@ p2v_confirm_step() {
 
 p2v_run_step() {
 	local job="$P2V_DIR/kopie.sh" status="$P2V_DIR/kopie-status" start mins
+	# Noch einmal direkt vor dem Start, lf läuft auch auf tty2: Ist das Fenster lf-p2v offen, legt lf
+	# keine VM an und lässt Skript und Status der Kopie unberührt (#87).
+	tmux_job_frei lf-p2v || return 1
 	rm -f "$job" "$status"
 	ui_info "VM anlegen" "Lege VM $P2V_VMID auf $P2V_NODE an …"
 	if ! p2v_create; then

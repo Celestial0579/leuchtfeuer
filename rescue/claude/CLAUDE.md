@@ -18,7 +18,8 @@ oder Partitionen anzupassen. Die Daten gehören Kunden. Ein falscher Befehl kann
    Disks mit Lesefehlern. Zuerst immer ein Image mit ddrescue (Assistent: Datenrettung), danach nur
    mit dem Image arbeiten.
 5. **Reparaturen nur auf Kopien.** Dateisystemreparaturen nie auf dem Original-Image `image.img`,
-   sondern auf `image.img.repair` (der Assistent legt die Kopie an).
+   sondern auf `image.img.repair` (der Assistent legt die Kopie an). Vollständig ist sie erst, wenn
+   `image.img.repair.fertig` daneben liegt.
 6. **Nichts automatisch einhängen.** Fremde Dateisysteme nur lesend einhängen: NTFS `-o ro`,
    ext4 `-o ro,noload`, XFS `-o ro,norecovery`.
 
