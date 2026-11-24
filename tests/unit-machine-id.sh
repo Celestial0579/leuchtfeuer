@@ -5,8 +5,9 @@
 #   - build/chroot-setup.sh leert /etc/machine-id und macht danach /var/lib/dbus/machine-id zu einem
 #     Link darauf, und danach schreibt nichts mehr eine eigene D-Bus-ID,
 #   - der Selbsttest ruft selftest_machine_id auf.
-# selftest_machine_id mit Dateien statt /etc und /var/lib/dbus: gesetzte ID und Link darauf ist
-# ok, jede eigene Datei, ein Link woandershin, eine leere oder fehlende ID ein Fehler.
+# selftest_machine_id mit Dateien statt /etc, /var/lib/dbus und /rofs: gesetzte ID und Link darauf
+# ist ok, wenn das Image keine ID trägt. Jede eigene Datei, ein Link woandershin, eine leere oder
+# fehlende ID und eine ID im Image (die systemd beim Start übernähme) sind ein Fehler.
 # Echt prüft es selftest_machine_id im Boot-Test.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -39,9 +40,29 @@ ID=0123456789abcdef0123456789abcdef
 ANDERE=fedcba9876543210fedcba9876543210
 OK="LF-SELFTEST: Maschinen-ID: je Start neu, D-Bus nennt dieselbe"
 
-# zeile   Ausgabe und Exit-Code von selftest_machine_id mit $T/etc und $T/dbus
+# image [ID|link:ZIEL|fehlt]   Das Image unter $T/rofs: /etc/machine-id leer und die D-Bus-Datei ein
+#   Link auf /etc/machine-id wie im Build; mit ID steht diese in /etc/machine-id, mit link:ZIEL zeigt
+#   der Link woandershin, mit fehlt gibt es kein Image
+image() {
+	rm -rf "$T/rofs"
+	[[ ${1-} == fehlt ]] && return
+	mkdir -p "$T/rofs/etc" "$T/rofs/var/lib/dbus"
+	: >"$T/rofs/etc/machine-id"
+	case ${1-} in
+	'') ln -s /etc/machine-id "$T/rofs/var/lib/dbus/machine-id" ;;
+	link:*) ln -s "${1#link:}" "$T/rofs/var/lib/dbus/machine-id" ;;
+	datei) printf '%s\n' "$ANDERE" >"$T/rofs/var/lib/dbus/machine-id" ;;
+	*)
+		printf '%s\n' "$1" >"$T/rofs/etc/machine-id"
+		ln -s /etc/machine-id "$T/rofs/var/lib/dbus/machine-id"
+		;;
+	esac
+}
+image
+
+# zeile   Ausgabe und Exit-Code von selftest_machine_id mit $T/etc, $T/dbus und $T/rofs
 zeile() {
-	OUT=$(LF_MACHINE_ID=$T/etc LF_DBUS_MACHINE_ID=$T/dbus selftest_machine_id)
+	OUT=$(LF_MACHINE_ID=$T/etc LF_DBUS_MACHINE_ID=$T/dbus LF_ROFS=$T/rofs selftest_machine_id)
 	RC=$?
 }
 # lage ETC [DBUS]   ETC ist der Inhalt von $T/etc; DBUS "link" (auf $T/etc), "link:ZIEL" oder ein
@@ -84,6 +105,22 @@ check "/etc/machine-id mit uninitialized: FAIL" '[[ $RC == 1 && $OUT == *"ist le
 rm -f "$T/etc"
 zeile
 check "ohne /etc/machine-id: FAIL" '[[ $RC == 1 && $OUT == *"ist leer oder keine ID" ]]'
+lage "$ID" link
+image "$ANDERE"
+zeile
+check "das Image trägt eine ID in /etc/machine-id (systemd übernähme sie): FAIL" '[[ $RC == 1 && $OUT == *"Das Image unter"*"trägt eine ID oder fehlt" ]]'
+image datei
+zeile
+check "die D-Bus-Datei im Image ist eine Datei mit ID (wie in den Betas bis #144): FAIL" '[[ $RC == 1 && $OUT == *"trägt eine ID oder fehlt" ]]'
+image link:/var/lib/dbus/anders
+zeile
+check "der Link im Image zeigt woandershin: FAIL" '[[ $RC == 1 && $OUT == *"trägt eine ID oder fehlt" ]]'
+image fehlt
+zeile
+check "kein Image unter /rofs: FAIL" '[[ $RC == 1 && $OUT == *"trägt eine ID oder fehlt" ]]'
+image
+zeile
+check "danach wieder wie im Build: ok" '[[ $RC == 0 && $OUT == "$OK" ]]'
 
 echo
 if ((fails)); then

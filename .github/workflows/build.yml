@@ -80,7 +80,8 @@ jobs:
       # kexec: ab dem Start gesperrt, auch für root (kernel.kexec_load_disabled=1). Echt prüft es selftest_kexec.
       # Build: Basis-Image per Digest, Claude Code CLI in fester Fassung mit sha256, Runner ubuntu-26.04.
       # CLI-Fassung: Neue Fassungen meldet claude-cli.yml, nur aus einem Manifest mit gültiger Signatur (#136).
-      # Maschinen-ID: je Start neu, D-Bus nennt dieselbe (#144). Echt prüft es selftest_machine_id.
+      # Maschinen-ID: je Start neu, D-Bus nennt dieselbe, im Image keine ID (#144). Echt prüft es selftest_machine_id.
+      # NVMe-Host: Host-NQN und Host-ID je Start, keine im Image, build.sh verweigert sonst das squashfs (#148).
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue gdisk xorriso mtools dosfstools openssh-server
@@ -131,6 +132,7 @@ jobs:
           bash tests/unit-build-fest.sh
           bash tests/unit-cli-fassung.sh
           bash tests/unit-machine-id.sh
+          bash tests/unit-nvme-host.sh
       # Job-Fenster mit echtem tmux in einem Pseudo-Terminal.
       - name: Unit-Tests
         run: |

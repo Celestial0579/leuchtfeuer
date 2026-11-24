@@ -293,6 +293,28 @@ boot_files() {
 # ---------------------------------------------------------------------------
 # 5. SquashFS
 # ---------------------------------------------------------------------------
+# start_ids_pruefen ROOT   Status 0, wenn das System unter ROOT keine Kennung aus dem Build trägt, die
+#   bei jedem Start neu entstehen soll (#144, #148): /etc/machine-id ist leer, /var/lib/dbus/machine-id
+#   ein Link darauf, /etc/nvme/hostnqn und /etc/nvme/hostid fehlen. Nennt sonst je Fund eine Zeile.
+start_ids_pruefen() {
+	local r=$1 bad=0 f
+	if [[ -s $r/etc/machine-id ]]; then
+		echo "/etc/machine-id ist nicht leer"
+		bad=1
+	fi
+	if [[ ! -L $r/var/lib/dbus/machine-id || $(readlink "$r/var/lib/dbus/machine-id") != /etc/machine-id ]]; then
+		echo "/var/lib/dbus/machine-id ist kein Link auf /etc/machine-id"
+		bad=1
+	fi
+	for f in /etc/nvme/hostnqn /etc/nvme/hostid; do
+		if [[ -e $r$f || -L $r$f ]]; then
+			echo "$f ist im Image"
+			bad=1
+		fi
+	done
+	return "$bad"
+}
+
 squash() {
 	local cli
 	log "Erzeuge Manifest und SquashFS"
@@ -314,6 +336,13 @@ squash() {
 	local pam
 	if ! pam=$(pam_pruefen "$CHROOT"); then
 		echo "FEHLER: Anmeldung im chroot: ${pam//$'\n'/; }" >&2
+		exit 1
+	fi
+	# Keine Kennung aus dem Build, die bei jedem Start neu entstehen soll (#144, #148), siehe
+	# chroot-setup.sh: Sonst hätten alle Starts derselben ISO dieselbe, und sie stünde im ISO.
+	local ids
+	if ! ids=$(start_ids_pruefen "$CHROOT"); then
+		echo "FEHLER: Kennungen aus dem Build im chroot: ${ids//$'\n'/; }" >&2
 		exit 1
 	fi
 	mksquashfs "$CHROOT" "$ISO/casper/filesystem.squashfs" \

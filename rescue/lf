@@ -84,6 +84,7 @@ selftest() {
 	selftest_ptrace || ok=0
 	selftest_kexec || ok=0
 	selftest_machine_id || ok=0
+	selftest_nvme_host || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -741,11 +742,12 @@ selftest_kexec() {
 }
 
 # selftest_machine_id   Die Maschinen-ID entsteht bei jedem Start neu, und D-Bus nennt dieselbe
-#   (#144): /etc/machine-id ist gesetzt, /var/lib/dbus/machine-id ist ein Link darauf. Als eigene
-#   Datei aus dem Build hätten alle Starts derselben ISO dieselbe D-Bus-ID. LF_MACHINE_ID und
-#   LF_DBUS_MACHINE_ID nennen für Tests andere Dateien.
+#   (#144): /etc/machine-id ist gesetzt, /var/lib/dbus/machine-id ist ein Link darauf, und im Image
+#   (dem squashfs unter /rofs) ist /etc/machine-id leer und die D-Bus-Datei derselbe Link. Stünde dort
+#   eine Datei mit einer ID, übernähme systemd sie beim Start, und alle Starts derselben ISO hätten
+#   dieselbe ID. LF_MACHINE_ID, LF_DBUS_MACHINE_ID und LF_ROFS nennen für Tests anderes.
 selftest_machine_id() {
-	local etc=${LF_MACHINE_ID:-/etc/machine-id} dbus=${LF_DBUS_MACHINE_ID:-/var/lib/dbus/machine-id} id='' did=''
+	local etc=${LF_MACHINE_ID:-/etc/machine-id} dbus=${LF_DBUS_MACHINE_ID:-/var/lib/dbus/machine-id} rofs=${LF_ROFS:-/rofs} id='' did=''
 	[[ -r $etc ]] && read -r id <"$etc"
 	[[ -r $dbus ]] && read -r did <"$dbus"
 	if [[ ! $id =~ ^[0-9a-f]{32}$ ]]; then
@@ -756,7 +758,39 @@ selftest_machine_id() {
 		echo "LF-SELFTEST: Maschinen-ID: $dbus ist kein Link auf $etc"
 		return 1
 	fi
+	if [[ ! -d $rofs/etc || -s $rofs/etc/machine-id || $(readlink "$rofs/var/lib/dbus/machine-id") != /etc/machine-id ]]; then
+		echo "LF-SELFTEST: Maschinen-ID: Das Image unter $rofs trägt eine ID oder fehlt"
+		return 1
+	fi
 	echo "LF-SELFTEST: Maschinen-ID: je Start neu, D-Bus nennt dieselbe"
+}
+
+# selftest_nvme_host   Host-NQN und Host-ID für NVMe-oF gehören zu diesem Start (#148): Es gibt beide
+#   im Format von nvme-cli, und im Image (dem squashfs unter /rofs) gibt es keine. Sie legt
+#   lf-nvme-host.service beim Start an. Die Dienste, mit denen sich nvme-cli beim Start selbst
+#   verbinden würde, sind maskiert. LF_NVME_DIR, LF_ROFS und LF_SYSTEMD_ETC nennen für Tests anderes.
+selftest_nvme_host() {
+	local d=${LF_NVME_DIR:-/etc/nvme} rofs=${LF_ROFS:-/rofs} sd=${LF_SYSTEMD_ETC:-/etc/systemd/system} nqn='' hid='' f u
+	local re_nqn='^nqn\.[0-9]{4}-[0-9]{2}\.[a-z0-9.-]+:[^[:space:]]+$' re_id='^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+	[[ -r $d/hostnqn ]] && read -r nqn <"$d/hostnqn"
+	[[ -r $d/hostid ]] && read -r hid <"$d/hostid"
+	if [[ ! $nqn =~ $re_nqn || ! $hid =~ $re_id ]]; then
+		echo "LF-SELFTEST: NVMe-Host: Host-NQN oder Host-ID fehlt oder hat nicht das Format von nvme-cli"
+		return 1
+	fi
+	for f in "$rofs/etc/nvme/hostnqn" "$rofs/etc/nvme/hostid"; do
+		if [[ ! -d $rofs/etc || -e $f || -L $f ]]; then
+			echo "LF-SELFTEST: NVMe-Host: Das Image unter $rofs trägt Host-NQN oder Host-ID oder fehlt"
+			return 1
+		fi
+	done
+	for u in nvmf-autoconnect.service nvmefc-boot-connections.service nvmf-connect-nbft.service nvmf-connect@.service; do
+		if [[ $(readlink "$sd/$u") != /dev/null ]]; then
+			echo "LF-SELFTEST: NVMe-Host: $u ist nicht maskiert, das System verbände sich von selbst"
+			return 1
+		fi
+	done
+	echo "LF-SELFTEST: NVMe-Host: Host-NQN und Host-ID von diesem Start, keine Verbindung von selbst"
 }
 
 # selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
