@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Die Partition LF-SSH im Image (#99), für build.sh und tests/unit-lf-ssh-image.sh.
+# Die Partition LF-SSH im Image (#99) und der GPT-Typ der Partition mit dem ISO-Dateisystem (#110),
+# für build.sh und tests/unit-lf-ssh-image.sh.
 #
 # Eine kleine FAT-Partition vom Typ „Basic data“, Partition und Dateisystem heißen LF-SSH. Nach dem
 # Beschreiben mit Rufus (DD-Modus), balenaEtcher oder dd erscheint sie unter Windows, macOS und Linux
@@ -14,6 +15,14 @@ LFSSH_PART=3
 # xorriso -append_partition erwartet
 LFSSH_TYPE_XORRISO="a2a0d0ebe5b9334487c068b6b72699c7"
 LFSSH_TYPE_GPT="EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
+
+# GPT-Typ von Partition 1 mit dem ISO-Dateisystem (#110): „Linux filesystem data“
+# (0FC63DAF-8483-4772-8E79-3D69D8477DE4), für xorriso -iso_mbr_part_type in derselben Bytefolge wie
+# oben. Windows vergibt Laufwerksbuchstaben nur an Partitionen vom Typ „Basic data“ und lässt diese
+# Partition deshalb aus. Am Start ändert der Typ nichts: GRUB und die initrd (lf_medium) finden das
+# ISO-Dateisystem über dessen UUID.
+ISO_TYPE_XORRISO="af3dc60f838472478e793d69d8477de4"
+ISO_TYPE_GPT="0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 
 # lfssh_image DATEI LIESMICH   Das FAT-Image: Label LF-SSH, darin nur LIESMICH.txt mit Zeilenenden
 #   von Windows.
@@ -52,17 +61,31 @@ lfssh_name() {
 
 # lfssh_check ISO MBR   Bauprüfung, MBR ist eine Datei mit dem ersten Sektor, wie xorriso ihn
 #   geschrieben hat. Nennt jede Abweichung, Status 1 bei einer:
+#   - Partition 1 hat den Typ ISO_TYPE_GPT, und es gibt nur die Partitionen 1 bis 3 (#110),
 #   - Partition 3 ist „Basic data“, heißt LF-SSH und ist LFSSH_KIB groß,
 #   - darin FAT mit dem Label LF-SSH, darin nur LIESMICH.txt,
 #   - sfdisk --verify findet keinen Fehler,
 #   - der erste Sektor ist unverändert.
 lfssh_check() {
-	local iso=$1 mbr=$2 line start size type name fs label files bad=0
+	local iso=$1 mbr=$2 dump line start size type type1 n names name fs label files bad=0
+	dump=$(sfdisk -d "$iso" 2>/dev/null)
 	# sfdisk -d nennt die Partition ISO3, bei einem Namen mit Ziffer am Ende ISOp3
-	line=$(sfdisk -d "$iso" 2>/dev/null | awk -v d="$iso" -v n="$LFSSH_PART" '$1 == d n || $1 == d "p" n')
+	line=$(awk -v d="$iso" -v n="$LFSSH_PART" '$1 == d n || $1 == d "p" n' <<<"$dump")
 	if [[ -z $line ]]; then
 		echo "keine Partition $LFSSH_PART in $iso"
 		return 1
+	fi
+	type1=$(awk -v d="$iso" '$1 == d "1" || $1 == d "p1"' <<<"$dump" | sed -n 's/.*type=\([0-9A-Fa-f-]*\).*/\1/p')
+	if [[ ${type1^^} != "$ISO_TYPE_GPT" ]]; then
+		echo "Partition 1: Typ ${type1:-?} statt Linux filesystem data"
+		bad=1
+	fi
+	# Ohne -no-pad trägt xorriso seine Polsterung als weitere Partition Gap1 ein
+	n=$(grep -c ' : start=' <<<"$dump")
+	if [[ $n != "$LFSSH_PART" ]]; then
+		names=$(sed -n 's/.* : start=.*name="\([^"]*\)".*/\1/p' <<<"$dump" | tr '\n' ' ')
+		echo "$n Partitionen statt $LFSSH_PART: ${names% }"
+		bad=1
 	fi
 	start=$(sed -n 's/.*start= *\([0-9]*\).*/\1/p' <<<"$line")
 	size=$(sed -n 's/.*size= *\([0-9]*\).*/\1/p' <<<"$line")

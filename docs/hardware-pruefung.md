@@ -175,7 +175,7 @@ Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`, davor stehen `LF-SELFTEST: p
 Dafür einen Wegwerf-Schlüssel auf dem zweiten Rechner erzeugen (`ssh-keygen -t ed25519 -f ~/.ssh/lf-probe`), nie einen echten. Die Schritte 2 bis 5 mit einem frisch beschriebenen Stick ohne persistenten Speicher (die Frage danach beim Start mit Nein beantworten): Mit verschlüsseltem Speicher merkt sich der Assistent bestätigte Schlüssel und fragt nicht mehr.
 
 1. **Partition:** Den frisch beschriebenen Stick an Windows, macOS und Linux anstecken.
-   Erwartet: ein Laufwerk `LF-SSH` mit `LIESMICH.txt`, beschreibbar. Notiere, welche weiteren Laufwerke das System zeigt und ob es anbietet, eins zu formatieren (ablehnen).
+   Erwartet: ein Laufwerk `LF-SSH` mit `LIESMICH.txt`, beschreibbar. Unter Windows zeigt der Stick kein weiteres Laufwerk (#110). Notiere, welche weiteren Laufwerke macOS und Linux zeigen und ob ein System anbietet, eins zu formatieren (ablehnen).
 2. **Anmeldung mit Schlüssel:** Den Inhalt von `~/.ssh/lf-probe.pub` als `authorized_keys` nach LF-SSH kopieren, den Stick auswerfen, davon starten. Werkzeuge > SSH.
    Erwartet:
    - Der Assistent zeigt den Schlüssel mit demselben Fingerabdruck wie `ssh-keygen -lf ~/.ssh/lf-probe.pub` und fragt, ob er gilt.
