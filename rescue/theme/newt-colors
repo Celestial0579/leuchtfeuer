@@ -1,5 +1,5 @@
 # whiptail/newt-Farben. Die Namen beziehen sich auf die per setvtrgb umdefinierte Palette:
-#   black=Grund #141715  lightgray=Text #E8EBE7  brown=Funke #E8A33D  red=Glut #AB5019
+#   black=Grund #141715  lightgray=Text #E8EBE7  brown=Funke #E8A33D  red=Glut #A24C18
 #   blue=Stahl #33414B   cyan=Stahl hell #B4C6D1  gray=Text leise #5A605B
 root=lightgray,black
 border=cyan,black

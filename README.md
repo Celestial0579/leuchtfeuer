@@ -77,19 +77,22 @@ Was ist drin
 Selbst bauen
 ------------
 
-Den Build übernimmt GitHub Actions (`.github/workflows/build.yml`). Lokal braucht es einen Ubuntu-26.04-Host oder Docker:
+Den Build übernimmt GitHub Actions (`.github/workflows/build.yml`). Lokal braucht es einen Ubuntu-26.04-Host oder Docker, am besten mit demselben Basis-Image wie in der CI:
 
 ```bash
-docker run --rm --privileged -v "$PWD:/src" ubuntu:26.04 /src/build/build.sh
+docker run --rm --privileged -v "$PWD:/src" "$(sed -n 's/^FROM //p' build/Dockerfile)" /src/build/build.sh
 ```
 
 Die ISO landet in `out/`.
 
+Der Build hängt nur an festgelegten Fassungen. Das Basis-Image steht per Digest in `build/Dockerfile`, Dependabot schlägt neue Digests vor. Die Claude Code CLI steht mit Fassung und sha256 in `build/chroot-setup.sh` (`CLAUDE_CLI_VERSION`, `CLAUDE_CLI_SHA256`, Werte aus `https://downloads.claude.ai/claude-code-releases/<Fassung>/manifest.json`, Plattform `linux-x64`). Eine neue Fassung kommt nur mit einem Commit. Das `.manifest` des Releases nennt beide.
+
 | Datei | Zweck |
 |---|---|
 | `build/build.sh` | debootstrap → chroot → SquashFS → Hybrid-ISO (xorriso) |
+| `build/Dockerfile` | Basis-Image des Builds, `ubuntu:26.04` per Digest (nur die FROM-Zeile) |
 | `build/packages.list` | Paketliste |
-| `build/chroot-setup.sh` | Pakete, Claude, Sicherheits-Defaults |
+| `build/chroot-setup.sh` | Pakete, Claude (die CLI in fester Fassung, sha256 geprüft), Sicherheits-Defaults |
 | `build/grub/` | Bootmenü und Theme |
 | `rescue/lf` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
@@ -104,7 +107,7 @@ Farben und Schriften stammen von [firestrike.de](https://firestrike.de). Sie gel
 
 | Grund | Text | Stahl | Stahl hell | Funke | Glut | Akzent |
 |---|---|---|---|---|---|---|
-| `#141715` | `#E8EBE7` | `#33414B` | `#B4C6D1` | `#E8A33D` | `#AB5019` | `#D9713C` |
+| `#141715` | `#E8EBE7` | `#33414B` | `#B4C6D1` | `#E8A33D` | `#A24C18` | `#DB7745` |
 
 Lizenz
 ------

@@ -1681,13 +1681,15 @@ sudo_files() {
 
 # sudo_neu VORHER   Die Zeilen von sudo_files, die in VORHER fehlen, wie comm -13. status läuft auch
 #   als Techniker und als lf-claude, ohne Leserecht auf die Grundregel und damit ohne ihre Prüfsumme:
-#   Dann zählen Art, Besitzer, Gruppe und Größe aus VORHER (#92).
+#   Dann zählen Art, Besitzer, Gruppe und Größe aus VORHER (#92). Nur ohne root: Fehlt root die
+#   Prüfsumme, etwa weil die Datei nicht lesbar oder größer als 64 KiB ist, zählt die Grundregel als
+#   geändert (#98).
 sudo_neu() {
-	sudo_files | awk -v vorher="$1" -v base="$BASE_FILE" '
+	sudo_files | awk -v vorher="$1" -v base="$BASE_FILE" -v root="$((EUID == 0))" '
 		function ohne_summe(s, a) { return split(s, a, ":") == 6 ? a[1] ":" a[2] ":" a[3] ":" a[4] ":" a[5] : s }
 		FILENAME == vorher { alt[$0] = 1; if ($1 == base && $2 ~ /^inhalt:/) basis = $1 " " ohne_summe($2); next }
 		($0 in alt) { next }
-		$1 == base && $2 ~ /^inhalt:/ && split($2, t, ":") == 5 && $0 == basis { next }
+		!root && $1 == base && $2 ~ /^inhalt:/ && split($2, t, ":") == 5 && $0 == basis { next }
 		{ print }' "$1" -
 }
 

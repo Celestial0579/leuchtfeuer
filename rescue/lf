@@ -1447,6 +1447,45 @@ selftest_claude_aufgabe() {
 	losetup -d "$dloop" 2>/dev/null
 	rm -f "$nt"
 
+	# Das Loop-Gerät des Images eines Falls ist keine Quelle (#91), auch nicht als Partition. Die
+	# Loop-Geräte des Selbsttests oben (Dateien unter /run) bleiben Quelle, auch mit --domain.
+	local iloop iloop2 ifail=""
+	local -a ibad
+	if [[ -f $c/image.img && -f $c2/image.img ]]; then
+		selftest_as sudo -n lf-aufgabe image "$(basename "$c")" >/dev/null 2>&1
+		selftest_as sudo -n lf-aufgabe image "$(basename "$c2")" >/dev/null 2>&1
+		iloop=$(losetup -j "$c/image.img" | cut -d: -f1 | head -n 1)
+		iloop2=$(losetup -j "$c2/image.img" | cut -d: -f1 | head -n 1)
+		for i in 1 2 3 4 5 6 7 8 9 10; do
+			udevadm settle
+			[[ -b ${iloop2}p1 ]] && break
+			sleep 0.5
+		done
+		if [[ -b $iloop && -n $iloop2 && -b ${iloop2}p1 ]]; then
+			ibad=("pruefen-rettung|$c|$iloop" "retten|$iloop" "fortsetzen|$(basename "$c")|$iloop"
+				"retten|${iloop2}p1" "domain|$(basename "$c2")|${iloop2}p1" "pruefen-rettung|$c2|${iloop2}p1")
+			for a in "${ibad[@]}"; do
+				IFS='|' read -ra args <<<"$a"
+				got=$(selftest_as sudo -n lf-aufgabe "${args[@]}" 2>&1) && ifail+="${a//|/ } angenommen; "
+				[[ $got == *"Loop-Gerät einer Datei auf dem Ziel"* ]] || ifail+="${a//|/ }: ${got:0:80}; "
+			done
+		else
+			ifail="Images der Fälle ließen sich nicht einbinden (${iloop:-?}, ${iloop2:-?}p1)"
+		fi
+		[[ -n $iloop ]] && losetup -d "$iloop" 2>/dev/null
+		[[ -n $iloop2 ]] && losetup -d "$iloop2" 2>/dev/null
+		selftest_loop_free "$c/image.img" && selftest_loop_free "$c2/image.img" ||
+			ifail+="Images der Fälle hängen nach losetup -d noch an einem Loop-Gerät; "
+	else
+		ifail="keine Fälle aus retten und retten --domain"
+	fi
+	if [[ -z $ifail ]]; then
+		echo "LF-SELFTEST: lf-aufgabe: retten, domain, fortsetzen und pruefen-rettung lehnen das Loop-Gerät des Images eines Falls ab, auch als Partition"
+	else
+		echo "LF-SELFTEST: lf-aufgabe: Loop-Gerät des Images eines Falls als Quelle: ${ifail:0:240}"
+		good=0
+	fi
+
 	# Prüfen: gleiche Kopie ohne Abweichung, eine veränderte Kopie wird gemeldet.
 	if selftest_as sudo -n lf-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
 		grep -q '^rsync rc=0$' "$LF_TARGET_MNT/LF/claude/selbsttest.pruefung.txt"; then

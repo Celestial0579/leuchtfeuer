@@ -141,9 +141,10 @@ echo 0 >"$W/sys/kernel/kexec_loaded" && echo 0 >"$W/sys/kernel/kexec_crash_loade
 # setzt 1 (MERKER in lf-freigabe). Hier eine Datei in der Attrappe von /proc, reboot_sim setzt sie auf 2.
 MK=$T/proc/sys/kernel/unprivileged_bpf_disabled
 echo 2 >"$MK"
-# Das /proc für claude.sh (LF_FREIGABE_PROC): self/stat ist das echte des Lesers (/proc/self/stat),
+# Das /proc für claude.sh (CLAUDE_FREIGABE_PROC): self/stat ist das echte des Lesers (/proc/self/stat),
 # self/mountinfo die Einhängungen wie nach dem Start, keine auf den Pfaden des Merkers. Die Regel einer
-# laufenden Freigabe für claude.sh ist $T/regel (LF_FREIGABE_REGEL).
+# laufenden Freigabe für claude.sh ist $T/regel (CLAUDE_FREIGABE_REGEL). Die Pfade setzen die Tests nach
+# dem Laden von claude.sh (#129).
 fproc_reset() {
 	mkdir -p "$T/fproc/self"
 	ln -sfn /proc/self/stat "$T/fproc/self/stat"
@@ -893,9 +894,9 @@ lf_start() {
 	: >"$T/start.log"
 	rm -f "$T/start.ablauf"
 	(
-		LF_FREIGABE_MERKER=$MK LF_FREIGABE_PROC=$T/fproc LF_FREIGABE_REGEL=$RULE
 		# shellcheck disable=SC1091
 		. rescue/lib/claude.sh
+		CLAUDE_FREIGABE_MERKER=$MK CLAUDE_FREIGABE_PROC=$T/fproc CLAUDE_FREIGABE_REGEL=$RULE
 		lf-freigabe() {
 			if [[ $1 == status && -e $T/start.ablauf && -n ${STATUS_NACH_ABLAUF:-} ]]; then
 				echo "$STATUS_NACH_ABLAUF"
@@ -1362,6 +1363,30 @@ check "ohne Leserecht nach einer Freigabe: Neustart nötig, nichts auf stderr" '
 check "ohne Leserecht: die Statuszeile von Claude sagt Neustart nötig, ohne Meldung" '[[ $(bash "$F" zeile </dev/null 2>&1) == "Leuchtfeuer: Claude gesperrt, Neustart nötig" ]]'
 chmod "$m92" "$T/sudoers.d/lf-claude.lf-gesperrt"
 chmod 644 "$SNAP/sudoers"
+
+echo "sudo_neu: Die Grundregel ohne Prüfsumme gilt nur ohne root als unverändert (#98):"
+# sudo_neu aus rescue/bin/lf-freigabe mit 1 (root) oder 0 statt der Prüfung der EUID, sudo_files als
+# Attrappe mit einer Zeile. Die Zeile der Grundregel von vorher hat ihre Prüfsumme.
+SN=$(sed -n '/^sudo_neu() {$/,/^}$/p' rescue/bin/lf-freigabe)
+SN_EUID='$((EUID == 0))'
+SN_ROOT="-v root=\"$SN_EUID\""
+check "sudo_neu nimmt root aus der EUID" '[[ $SN == *"$SN_ROOT"* ]]'
+# sn_lauf ROOT AKTUELL   Ausgabe von sudo_neu, wenn sudo_files AKTUELL sagt
+sn_lauf() {
+	(
+		akt=$2
+		BASE_FILE=/etc/sudoers.d/lf-claude
+		sudo_files() { printf '%s\n' "$akt"; }
+		eval "${SN//"$SN_EUID"/$1}"
+		sudo_neu "$T/sn-vorher"
+	)
+}
+SN_OHNE="/etc/sudoers.d/lf-claude inhalt:8120:0:0:57"
+echo "$SN_OHNE:$(printf '%064d' 7)" >"$T/sn-vorher"
+check "ohne root und ohne Prüfsumme: dieselbe Art, Besitzer, Gruppe und Größe zählen als unverändert (#92)" '[[ -z $(sn_lauf 0 "$SN_OHNE") ]]'
+check "als root ohne Prüfsumme: Die Grundregel zählt als geändert" '[[ $(sn_lauf 1 "$SN_OHNE") == "$SN_OHNE" ]]'
+check "als root mit derselben Prüfsumme: unverändert" '[[ -z $(sn_lauf 1 "$(cat "$T/sn-vorher")") ]]'
+check "ohne root, eine andere Größe: geändert" '[[ $(sn_lauf 0 "${SN_OHNE%:57}:58") == "${SN_OHNE%:57}:58" ]]'
 
 echo "Manager-Umgebung (F13):"
 reboot_sim
@@ -2957,7 +2982,7 @@ kill "$M5" 2>/dev/null
 reboot_sim
 cleanproc
 check "Image: eine eigene Datei setzt den Merker beim Start auf 2, keine andere im Overlay setzt ihn" '[[ $(grep -vE "^[[:space:]]*(#|$)" build/overlay/etc/sysctl.d/90-lf-freigabe.conf 2>/dev/null) == "kernel.unprivileged_bpf_disabled = 2" && $(grep -rlE "^[[:space:]]*kernel[./]unprivileged_bpf_disabled" build/overlay) == build/overlay/etc/sysctl.d/90-lf-freigabe.conf ]]'
-check "lf-freigabe und claude.sh lesen denselben Merker, claude.sh nur mit read in seinem Prozess, lf-freigabe schreibt ihn nur in mark_grant" '[[ $(sed -n "s/^MERKER=//p" rescue/bin/lf-freigabe) == /proc/sys/kernel/unprivileged_bpf_disabled && $(sed -n "s/^CLAUDE_FREIGABE_MERKER=\${LF_FREIGABE_MERKER:-\(.*\)}$/\1/p" rescue/lib/claude.sh) == /proc/sys/kernel/unprivileged_bpf_disabled ]] && grep -qxF "	{ read -r v <\"\$CLAUDE_FREIGABE_MERKER\"; } 2>/dev/null" rescue/lib/claude.sh && [[ $(grep -v "^[[:space:]]*#" rescue/lib/claude.sh | grep -c "CLAUDE_FREIGABE_MERKER") == 2 && $(grep -v "^[[:space:]]*#" rescue/bin/lf-freigabe | grep -c ">\"\$MERKER\"") == 1 ]] && grep -qxF "	{ echo 1 >\"\$MERKER\"; } 2>/dev/null" rescue/bin/lf-freigabe && ! grep -q "/proc/sys/kernel/unprivileged_bpf_disabled" rescue/lf'
+check "lf-freigabe und claude.sh lesen denselben Merker, claude.sh nur mit read in seinem Prozess, lf-freigabe schreibt ihn nur in mark_grant" '[[ $(sed -n "s/^MERKER=//p" rescue/bin/lf-freigabe) == /proc/sys/kernel/unprivileged_bpf_disabled && $(sed -n "s/^CLAUDE_FREIGABE_MERKER=//p" rescue/lib/claude.sh) == /proc/sys/kernel/unprivileged_bpf_disabled ]] && grep -qxF "	{ read -r v <\"\$CLAUDE_FREIGABE_MERKER\"; } 2>/dev/null" rescue/lib/claude.sh && [[ $(grep -v "^[[:space:]]*#" rescue/lib/claude.sh | grep -c "CLAUDE_FREIGABE_MERKER") == 2 && $(grep -v "^[[:space:]]*#" rescue/bin/lf-freigabe | grep -c ">\"\$MERKER\"") == 1 ]] && grep -qxF "	{ echo 1 >\"\$MERKER\"; } 2>/dev/null" rescue/bin/lf-freigabe && ! grep -q "/proc/sys/kernel/unprivileged_bpf_disabled" rescue/lf'
 check "lf-freigabe und claude.sh prüfen dieselben Pfade auf Einhängungen, lf-freigabe in granted_since_boot vor dem Merker" '[[ $(sed -n "s/^MERKER_MOUNTS=(\(.*\))$/\1/p" rescue/bin/lf-freigabe) == "/proc/sys /proc/sys/kernel \"\$MERKER\"" && $(sed -n "s/^CLAUDE_FREIGABE_EINHAENGUNGEN=(\(.*\))$/\1/p" rescue/lib/claude.sh) == "/proc/sys /proc/sys/kernel /proc/sys/kernel/unprivileged_bpf_disabled" ]] && [[ $(sed -n "/^granted_since_boot() {$/,/^}$/p" rescue/bin/lf-freigabe | sed -n 3p) == "	proc_view_changed && return 0" ]]'
 check "claude.sh liest Einhängungen und die eigene PID nur mit read in einem Fork, ohne neues Programm" 'b=$(sed -n "/^claude_freigabe_eingehaengt() ($/,/^)$/p" rescue/lib/claude.sh); [[ -n $b ]] && grep -qxF "	{ read -r i _ <\"\$CLAUDE_FREIGABE_PROC/self/stat\"; } 2>/dev/null" <<<"$b" && grep -qxF "		done <\"\$CLAUDE_FREIGABE_PROC/self/mountinfo\"" <<<"$b" && ! grep -qE "\\\$\\([^(]|\`|awk|sed|grep|cat |stat |findmnt" <<<"$b"'
 check "das Menü merkt sich Freigaben nur in seinem Prozess: Zustand direkt, nie aus der Umgebung, nach dem eigenen Freischalten und nach dem Ende ohne Timer (GHSA-874q-q3v7-m56v)" '[[ $(grep -c "^	claude_freigabe_zustand >/dev/null$" rescue/lib/claude.sh) == 3 && $(grep -c "\$(claude_freigabe_zustand)" rescue/lib/claude.sh) == 1 && $(grep -c "^CLAUDE_FREIGABE_GESEHEN=" rescue/lib/claude.sh) == 1 ]] && grep -qx "CLAUDE_FREIGABE_GESEHEN=0" rescue/lib/claude.sh && grep -qxF "	((rc == 0)) && CLAUDE_FREIGABE_GESEHEN=1" rescue/lib/claude.sh && grep -qxF "		claude_freigabe_zustand >/dev/null" rescue/lf && grep -qxF "		hint=\$(claude_freigabe_hinweis \"\$CLAUDE_FREIGABE_STAND\")" rescue/lf && [[ $(grep -cE "^	+CLAUDE_FREIGABE_GESEHEN=1$" rescue/lf) == 2 ]]'
@@ -3004,18 +3029,22 @@ echo "Menü Claude-Freigabe (#92):"
 # menue STATUS WAHL JANEIN [MINUTEN] [DANACH] [DANN]   claude_freigabe_menu aus rescue/lib/claude.sh
 #   mit Attrappen: lf-freigabe status sagt STATUS, nach einem Aufruf von sudo DANACH (falls angegeben),
 #   ui_menu wählt WAHL (leer: Abbruch), ui_yesno gibt JANEIN zurück, ui_input gibt MINUTEN (leer:
-#   Abbruch). Danach läuft DANN im selben Prozess. sudo endet mit MENUE_SUDO_RC (Vorgabe 0). Dialoge und
-#   sudo schreiben nach $T/menue. Der Merker
+#   Abbruch). Danach läuft DANN im selben Prozess. sudo endet mit MENUE_SUDO_RC (Vorgabe 0). Mit
+#   MENUE_ABGELAUFEN sagt status nach der Wahl im Menü diesen Zustand, wie eine Freigabe, die abläuft,
+#   während das Menü offen ist (#98). Dialoge und sudo schreiben nach $T/menue. Der Merker
 #   im Kernel ist $T/merker (Vorgabe 2), die Regel einer laufenden Freigabe $T/regel (Vorgabe: da), die
 #   Einhängungen stehen in $T/fproc.
 echo 2 >"$T/merker"
 : >"$T/regel"
 menue() {
 	: >"$T/menue"
+	rm -f "$T/menue-gewaehlt"
 	(
 		ms=$1 mw=$2 mj=$3 mm=${4:-} mn=${5:-} md=${6:-}
-		LF_FREIGABE_MERKER=$T/merker LF_FREIGABE_PROC=$T/fproc LF_FREIGABE_REGEL=$T/regel
-		lf-freigabe() { [[ $1 == status ]] && echo "$ms"; }
+		lf-freigabe() {
+			[[ $1 == status ]] || return 1
+			if [[ -n ${MENUE_ABGELAUFEN:-} && -e $T/menue-gewaehlt ]]; then echo "$MENUE_ABGELAUFEN"; else echo "$ms"; fi
+		}
 		sudo() {
 			echo "sudo $*" >>"$T/menue"
 			[[ -z $mn ]] || ms=$mn
@@ -3024,13 +3053,14 @@ menue() {
 		run() { "$@"; }
 		log() { :; }
 		clear() { :; }
-		ui_menu() { echo "menü $*" >>"$T/menue"; [[ -n $mw ]] && echo "$mw"; }
+		ui_menu() { echo "menü $*" >>"$T/menue"; [[ -n $mw ]] && : >"$T/menue-gewaehlt" && echo "$mw"; }
 		ui_msg() { echo "meldung $2" >>"$T/menue"; }
 		ui_yesno() { echo "janein $1" >>"$T/menue"; return "$mj"; }
 		ui_input() { echo "eingabe $2" >>"$T/menue"; [[ -n $mm ]] && echo "$mm"; }
 		text_clean() { cat; }
 		# shellcheck disable=SC1091
 		. rescue/lib/claude.sh
+		CLAUDE_FREIGABE_MERKER=$T/merker CLAUDE_FREIGABE_PROC=$T/fproc CLAUDE_FREIGABE_REGEL=$T/regel
 		claude_freigabe_menu
 		# Danach im selben Prozess (das Menü merkt sich, was es gesehen hat): DANN, mit Rückgabe und Zustand.
 		if [[ -n $md ]]; then
@@ -3062,6 +3092,12 @@ menue "$NN" "" 1
 check "nach einer Freigabe: nur der Hinweis, dass Claude bis zum Neustart gesperrt ist, kein Dialog für eine neue Freigabe, kein sudo (GHSA-874q-q3v7-m56v)" '[[ $(folge) == "meldung " ]] && grep -qF "meldung Eine neue Freigabe gibt es erst nach dem Neustart. $GESPERRT$NN" "$T/menue"'
 menue "an bis 20:30" aus 1 "" "$NN"
 check "Sofort beenden: danach sagt der Dialog, dass Claude bis zum Neustart gesperrt ist (GHSA-874q-q3v7-m56v)" '[[ $(folge) == "menü sudo meldung " ]] && grep -qxF "sudo lf-freigabe aus" "$T/menue" && grep -qF "meldung Die Freigabe ist beendet. $GESPERRT$NN" "$T/menue"'
+menue "an bis 20:30" mehr 1
+check "Verlängern, die Freigabe läuft noch: sudo lf-freigabe an 30 am Terminal" '[[ $(folge) == "menü sudo " ]] && grep -qxF "sudo lf-freigabe an 30" "$T/menue"'
+MENUE_ABGELAUFEN=$NN menue "an bis 20:30" mehr 1
+check "Verlängern, die Freigabe ist abgelaufen, während das Menü offen war: kein sudo, der Hinweis sagt, dass sie zu Ende ist (#98)" '[[ $(folge) == "menü meldung " ]] && grep -qF "meldung Die Freigabe ist inzwischen zu Ende, es gibt nichts mehr zu verlängern. $GESPERRT$NN" "$T/menue"'
+MENUE_ABGELAUFEN=aus menue "an, ohne Ablauf" mehr 1
+check "Verlängern, status sagt danach aus: kein sudo, das Menü kennt die Freigabe und sagt Neustart nötig (#98)" '[[ $(folge) == "menü meldung " ]] && grep -qF "meldung Die Freigabe ist inzwischen zu Ende, es gibt nichts mehr zu verlängern. ${GESPERRT}Neustart nötig: Das Menü kennt eine Freigabe seit dem Start" "$T/menue"'
 
 echo "Assistent nach einer Freigabe (GHSA-874q-q3v7-m56v):"
 # assistent STATUS FUNKTION [DANACH]   FUNKTION aus rescue/lib/claude.sh mit Attrappen: lf-freigabe
@@ -3086,10 +3122,10 @@ assistent() {
 			echo cage >>"$T/assistent"
 			[[ -z $danach ]] || printf '%s\n' "$danach" >"$T/st"
 		}
-		LF_RUN=$T/lf-run LF_LOG=$T/lf.log LF_LIB=$T/lf-lib LF_FREIGABE_MERKER=$T/merker LF_FREIGABE_PROC=$T/fproc
-		LF_FREIGABE_REGEL=$T/regel
+		LF_RUN=$T/lf-run LF_LOG=$T/lf.log LF_LIB=$T/lf-lib
 		# shellcheck disable=SC1091
 		. rescue/lib/claude.sh
+		CLAUDE_FREIGABE_MERKER=$T/merker CLAUDE_FREIGABE_PROC=$T/fproc CLAUDE_FREIGABE_REGEL=$T/regel
 		claude_context() { echo kontext >>"$T/assistent"; }
 		claude_wayland_dir() { return 0; }
 		claude_scope() {
