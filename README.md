@@ -85,7 +85,7 @@ docker run --rm --privileged -v "$PWD:/src" "$(sed -n 's/^FROM //p' build/Docker
 
 Die ISO landet in `out/`.
 
-Der Build hängt nur an festgelegten Fassungen. Das Basis-Image steht per Digest in `build/Dockerfile`, Dependabot schlägt neue Digests vor. Die Claude Code CLI steht mit Fassung und sha256 in `build/chroot-setup.sh` (`CLAUDE_CLI_VERSION`, `CLAUDE_CLI_SHA256`, Werte aus `https://downloads.claude.ai/claude-code-releases/<Fassung>/manifest.json`, Plattform `linux-x64`). Eine neue Fassung kommt nur mit einem Commit. Das `.manifest` des Releases nennt beide.
+Der Build hängt nur an festgelegten Fassungen. Das Basis-Image steht per Digest in `build/Dockerfile`, Dependabot schlägt neue Digests vor. Die Claude Code CLI steht mit Fassung und sha256 in `build/chroot-setup.sh` (`CLAUDE_CLI_VERSION`, `CLAUDE_CLI_SHA256`, Werte aus `https://downloads.claude.ai/claude-code-releases/<Fassung>/manifest.json`, Plattform `linux-x64`). Eine neue Fassung kommt nur mit einem Commit. Das `.manifest` des Releases nennt beide. Neue stabile Fassungen der CLI meldet der Workflow `claude-cli.yml` wöchentlich als Issue, mit Fassung und sha256 nur aus einem Manifest, dessen Signatur der Anthropic-Schlüssel mit dem Fingerabdruck aus `build/chroot-setup.sh` bestätigt (`build/cli-fassung.sh`).
 
 | Datei | Zweck |
 |---|---|

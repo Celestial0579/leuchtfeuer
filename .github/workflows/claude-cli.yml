@@ -1,0 +1,34 @@
+name: Claude Code CLI
+
+# Meldet eine neuere stabile Fassung der Claude Code CLI als Issue (#136). Fassung und sha256 nimmt
+# build/cli-fassung.sh nur aus einem Manifest, dessen Signatur der Anthropic-Schlüssel bestätigt.
+# Die Fassung im Build ändert nur ein Commit, sein PR läuft durch die CI wie jeder andere.
+on:
+  schedule:
+    # Wöchentlich montags um 05:23 UTC
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: claude-cli
+  cancel-in-progress: false
+
+jobs:
+  fassung:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Werkzeuge
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq gnupg
+      - name: Neuere stabile Fassung beim Hersteller?
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash build/cli-fassung.sh --issue
