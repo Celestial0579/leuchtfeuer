@@ -387,6 +387,11 @@ squash() {
 make_iso() {
 	log "Erzeuge $ISO_NAME"
 	(cd "$ISO" && find . -type f ! -name md5sum.txt -print0 | sort -z | xargs -0 md5sum >md5sum.txt)
+	# Partition 1 mit dem ISO-Dateisystem bekommt den GPT-Typ ISO_TYPE_XORRISO (#110). -no-pad: Ohne
+	# legt xorriso 300 KiB Polsterung hinter die angehängten Partitionen und trägt sie in der GPT als
+	# Partition Gap1 vom Typ „Basic data“ ohne Dateisystem ein (#110). Die Polsterung hilft nur beim
+	# Brennen auf CD im TAO-Modus, und dort folgen dem ISO-Dateisystem ohnehin die angehängten
+	# Partitionen.
 	xorriso -as mkisofs -r -V "$ISO_LABEL" --modification-date="$ISO_DATE" -o "$OUT/$ISO_NAME" \
 		-J -joliet-long -l -iso-level 3 \
 		--grub2-mbr "$WORK/boot_hybrid.img" \
@@ -394,7 +399,8 @@ make_iso() {
 		-append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b "$WORK/efi.img" \
 		-append_partition "$LFSSH_PART" "$LFSSH_TYPE_XORRISO" "$WORK/lf-ssh.img" \
 		-appended_part_as_gpt \
-		-iso_mbr_part_type a2a0d0eb-e5b9-3344-87c0-68b6b72699c7 \
+		-iso_mbr_part_type "$ISO_TYPE_XORRISO" \
+		-no-pad \
 		-c boot.catalog \
 		-b boot/grub/i386-pc/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
 		-eltorito-alt-boot \
