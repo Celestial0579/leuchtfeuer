@@ -8,6 +8,7 @@
 # überträgt, blieb das Fenster lf-kopie leer (#79).
 # Eine fertige reparierte Kopie steht in "Dateien kopieren" zur Wahl. Repariert wird nur eine
 # Kopie, die cp fehlerfrei angelegt hat, und nie, solange ihr Fenster noch offen ist (#87).
+# Hängt die Partition der Kopie noch, wird sie vor der Reparatur ausgehängt (#130).
 # Ohne Disks und ohne root: Einhängen, findmnt, tmux, sudo und die Menüs sind Attrappen.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -144,10 +145,17 @@ ui_yesno() {
 	ANTWORTEN=${ANTWORTEN#* }
 	[[ $a == ja ]]
 }
+# findmnt nennt als Einhängepunkte der Partition die Wörter aus EINGEHAENGT. umount schreibt nach
+# $T/repariert mit, mit BELEGT scheitert es (#130).
+findmnt() { [[ $* == "-rn -o TARGET -S /dev/loop9p1" ]] && printf '%s\n' ${EINGEHAENGT:-}; return 0; }
 sudo() {
 	case "$1 $2" in
 	"blockdev --getro") echo 0 ;;
 	"blkid -o") echo ext4 ;;
+	"umount "*)
+		printf 'umount %s\n' "$2" >>"$T/repariert"
+		[[ -z ${BELEGT:-} ]]
+		;;
 	esac
 }
 image_attach() { echo "$1 $2" >>"$T/attach"; echo /dev/loop9; }
@@ -210,6 +218,20 @@ SCHLIESSEN=1
 reparatur
 check "schließt man es dabei mit Enter, geht es mit der fertigen Kopie weiter" '[[ $(cat "$T/angezeigt") == lf-reparatur-kopie && ! -e $T/fenster && $(cat "$T/attach") == "$KOPIE rw" && -s $T/repariert ]]'
 SCHLIESSEN=""
+
+echo "Reparatur einer Partition, die noch eingehängt ist (#130):"
+EINGEHAENGT="$T/mnt/repair-loop9p1"
+reparatur
+check "die Partition der fertigen Kopie hängt noch: erst ausgehängt, dann repariert" '[[ $(sed -n 1p "$T/repariert") == "umount $T/mnt/repair-loop9p1" && $(sed -n 2p "$T/repariert") == "sudo e2fsck -fy /dev/loop9p1" ]]'
+EINGEHAENGT="$T/mnt/repair-loop9p1 $T/mnt/loop9p1"
+reparatur
+check "an zwei Stellen eingehängt: beide ausgehängt, dann repariert" '[[ $(grep -c "^umount " "$T/repariert") == 2 && $(tail -n1 "$T/repariert") == "sudo e2fsck -fy /dev/loop9p1" ]]'
+BELEGT=1
+reparatur
+check "lässt sie sich nicht aushängen (eine Kopie liest noch daraus): nichts repariert, nichts weiter ausgehängt, lf sagt es" '[[ $(cat "$T/repariert") == "umount $T/mnt/repair-loop9p1" && ! -e $T/mount ]] && grep -q "^Reparatur|loop9p1 ist unter $T/mnt/repair-loop9p1 eingehängt und lässt sich nicht aushängen" "$T/meldungen"'
+BELEGT="" EINGEHAENGT=""
+reparatur
+check "hängt sie nirgends: kein umount, repariert wie bisher" '[[ $(cat "$T/repariert") == "sudo e2fsck -fy /dev/loop9p1" ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
