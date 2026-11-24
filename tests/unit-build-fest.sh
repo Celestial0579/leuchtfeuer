@@ -8,6 +8,8 @@
 #   - Dependabot hält das Image in /build aktuell, ohne eine andere Ubuntu-Fassung vorzuschlagen,
 #   - chroot-setup.sh legt Fassung und sha256 der Claude Code CLI fest, führt kein Skript aus dem
 #     Netz aus und verlangt, dass die installierte CLI die festgelegte Fassung meldet,
+#   - chroot-setup.sh legt für apt nur den Claude-Desktop-Schlüssel mit dem festgelegten
+#     Fingerabdruck ab, nie einen weiteren Schlüssel aus dem Download,
 #   - build.sh schreibt Basis-Image und Fassung der CLI ins Manifest des Releases.
 # Mit einer Attrappe für curl: claude_cli_laden lädt die feste Fassung für linux-x64 und lehnt
 # jede Datei mit einem anderen sha256 ab. Echt prüft es der ISO-Build in der CI.
@@ -32,6 +34,8 @@ RUN_IMG='"$img" /src/build/build.sh'
 ENV_IMG='-e LF_BASIS_IMAGE="$img"'
 IMG_RE='^ubuntu:26\.04@sha256:[0-9a-f]{64}$ ]]'
 V_CHECK='[[ $cli_v != "$CLAUDE_CLI_VERSION "* ]]'
+EXPORT_PIN='--armor --export "$CLAUDE_DESKTOP_FPR" >"$key"'
+ALLE_PUB='$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }'
 
 echo "Basis-Image:"
 check "build/Dockerfile hat genau eine FROM-Zeile" '[[ $(grep -c "^FROM" "$D") == 1 ]]'
@@ -44,6 +48,11 @@ check "jeder Job läuft auf ubuntu-26.04" 'n=$(grep -cE "^[[:space:]]+runs-on:" 
 check "kein Job läuft auf ubuntu-latest" '! grep -q "ubuntu-latest" "$W"'
 check "Dependabot prüft das Image in /build" 'grep -qE "^[[:space:]]+- package-ecosystem: docker$" "$B" && grep -qE "^[[:space:]]+directory: /build$" "$B"'
 check "Dependabot schlägt keine andere Ubuntu-Fassung vor" 'grep -qE "^[[:space:]]+- dependency-name: ubuntu$" "$B" && grep -qF "\"version-update:semver-major\", \"version-update:semver-minor\"" "$B"'
+
+echo "Claude Desktop:"
+check "für apt nur der Schlüssel mit dem festgelegten Fingerabdruck, aus dem Download exportiert" 'grep -qF -- "$EXPORT_PIN" "$C"'
+check "geprüft werden alle Hauptschlüssel der Datei, nicht nur der erste" 'grep -qF -- "$ALLE_PUB" "$C" && ! grep -qF "{print \$10; exit}" "$C"'
+check "apt nimmt genau diese Datei (signed-by)" 'grep -qF "signed-by=\$key]" "$C" && [[ $(grep -c "^key=" "$C") == 1 ]]'
 
 echo "Claude Code CLI:"
 check "chroot-setup.sh legt die Fassung fest" 'grep -qE "^CLAUDE_CLI_VERSION=\"[0-9]+\.[0-9]+\.[0-9]+\"$" "$C"'

@@ -48,10 +48,17 @@ done
 
 log "Claude Desktop aus dem offiziellen Anthropic-Repo"
 key=/usr/share/keyrings/claude-desktop-archive-keyring.asc
-curl -fsSL -o "$key" https://downloads.claude.ai/claude-desktop/key.asc
-fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '/^fpr:/ {print $10; exit}')"
+# apt vertraut jedem Schlüssel in der Datei hinter signed-by. Darum kommt aus dem Download nur der
+# Schlüssel mit dem festgelegten Fingerabdruck hinein, samt seinen Unterschlüsseln, sonst keiner.
+roh="$(mktemp)"
+kh="$(mktemp -d)"
+curl -fsSL -o "$roh" https://downloads.claude.ai/claude-desktop/key.asc
+gpg --homedir "$kh" --batch --quiet --no-autostart --import "$roh"
+gpg --homedir "$kh" --batch --no-autostart --armor --export "$CLAUDE_DESKTOP_FPR" >"$key"
+rm -rf "$kh" "$roh"
+fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')"
 if [[ $fpr != "$CLAUDE_DESKTOP_FPR" ]]; then
-	echo "FEHLER: Claude-Desktop-Schlüssel hat Fingerprint '$fpr', erwartet $CLAUDE_DESKTOP_FPR" >&2
+	echo "FEHLER: Im Claude-Desktop-Schlüssel steht nicht genau der Hauptschlüssel $CLAUDE_DESKTOP_FPR" >&2
 	exit 1
 fi
 echo "deb [arch=amd64 signed-by=$key] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
