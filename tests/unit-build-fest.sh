@@ -241,6 +241,13 @@ else
 	datei "haupt $A"
 	GPG_SHOW_RC=2 probe
 	check "gpg --show-keys scheitert, nachdem es den festgelegten Schlüssel gezeigt hat: Status ungleich 0" '((RC != 0))'
+	(
+		set +o pipefail
+		rm -f "$T/ziel"
+		GPG_SHOW_RC=2 desktop_schluessel "$T/roh" "$T/ziel"
+	) 2>>"$T/gpg.err"
+	RC=$?
+	check "dasselbe ohne pipefail beim Aufrufer: Status ungleich 0 (#146)" '((RC != 0))'
 	unset -f gpg
 fi
 

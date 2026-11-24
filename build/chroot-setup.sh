@@ -28,15 +28,17 @@ claude_cli_laden() {
 # desktop_schluessel DATEI ZIEL   Schreibt aus der heruntergeladenen Schlüsseldatei DATEI nur den
 #   Schlüssel mit CLAUDE_DESKTOP_FPR samt seinen Unterschlüsseln nach ZIEL. apt vertraut jedem
 #   Schlüssel in der Datei hinter signed-by. Der Export allein reicht dafür nicht: Status ungleich 0,
-#   wenn ZIEL danach nicht genau einen Hauptschlüssel hat, und zwar diesen. gpg arbeitet nur in
-#   einem eigenen, leeren Verzeichnis, nie in dem von root.
+#   wenn ZIEL danach nicht genau einen Hauptschlüssel hat, und zwar diesen, oder wenn ein Aufruf von
+#   gpg scheitert, unabhängig von pipefail (#146). gpg arbeitet nur in einem eigenen, leeren
+#   Verzeichnis, nie in dem von root.
 desktop_schluessel() {
 	local kh fpr=""
 	kh="$(mktemp -d)" || return 1
 	if gpg --homedir "$kh" --batch --quiet --no-autostart --import "$1" &&
 		gpg --homedir "$kh" --batch --no-autostart --armor --export "$CLAUDE_DESKTOP_FPR" >"$2" &&
-		[[ -s $2 ]]; then
-		fpr="$(gpg --homedir "$kh" --batch --no-autostart --show-keys --with-colons "$2" | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')" || fpr=""
+		[[ -s $2 ]] &&
+		gpg --homedir "$kh" --batch --no-autostart --show-keys --with-colons "$2" >"$kh/liste"; then
+		fpr="$(awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }' "$kh/liste")"
 	fi
 	rm -rf "$kh"
 	[[ $fpr == "$CLAUDE_DESKTOP_FPR" ]]
